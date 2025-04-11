@@ -1,0 +1,16 @@
+# NextFlow
+work/
+.nextflow*
+trace-*.html*
+pipeline_dag.html
+
+# Data/files
+*.fastq.gz
+*.md5
+results/
+
+# System
+.DS_Store
+*.swp
+*.bak
+*.tmp

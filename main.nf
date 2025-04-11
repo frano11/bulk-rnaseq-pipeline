@@ -2,6 +2,9 @@
 
 nextflow.enable.dsl = 2
 
+// ========================
+// Configuration
+// ========================
 params.input_dir = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/fastq_gz"
 
 // ========================
@@ -86,7 +89,7 @@ process check_orphaned_md5 {
 }
 
 process fastqc_raw {
-    publishDir "./results/fastqc_raw", mode: 'copy'
+    publishDir "${params.fastqc_raw_dir}", mode: 'copy'
 
     input:
     path fastq
@@ -103,8 +106,8 @@ process fastqc_raw {
 
 process trim_galore {
     tag { fastq.simpleName }
-    publishDir "./results/trimmed", pattern: "*_trimmed.fq.gz", mode: 'copy'
-    publishDir "./results/trimmed/reports", pattern: "*trimming_report.txt", mode: 'copy'
+    publishDir "${params.trimmed_dir}", pattern: "*_trimmed.fq.gz", mode: 'copy'
+    publishDir "${params.trimmed_reports_dir}", pattern: "*trimming_report.txt", mode: 'copy'
 
     input:
     path fastq
@@ -128,7 +131,7 @@ process trim_galore {
 }
 
 process fastqc_trimmed {
-    publishDir "./results/trimmed/fastqc_trimmed", mode: 'copy'
+    publishDir "${params.fastqc_trimmed_dir}", mode: 'copy'
 
     input:
     tuple val(base), path(trimmed_fastq), path(trimming_report)
@@ -144,7 +147,7 @@ process fastqc_trimmed {
 }
 
 process multiqc_raw {
-    publishDir "./results/multiqc_raw", mode: 'copy'
+    publishDir "${params.multiqc_raw_dir}", mode: 'copy'
 
     input:
     path reports
@@ -161,7 +164,7 @@ process multiqc_raw {
 }
 
 process multiqc_trimmed {
-    publishDir "./results/multiqc_trimmed", mode: 'copy'
+    publishDir "${params.multiqc_trimmed_dir}", mode: 'copy'
 
     input:
     path reports
@@ -178,7 +181,7 @@ process multiqc_trimmed {
 }
 
 process combine_md5_logs {
-    publishDir "./results", mode: 'copy'
+    publishDir "${params.results_dir}", mode: 'copy'
 
     input:
     path logs
@@ -213,7 +216,7 @@ workflow {
 
     multiqc_trimmed(
         fastqc_trimmed.out.reports
-            .mix(trim_galore.out.trimmed.collect { it[2] }) // trimming reports
+            .mix(trim_galore.out.trimmed.collect { it[2] })
             .collect()
     )
 
@@ -223,4 +226,3 @@ workflow {
             .collect()
     )
 }
- 

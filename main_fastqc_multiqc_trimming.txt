@@ -1,0 +1,399 @@
+
+Nextflow script for processing *fastq.gz files into *fq.gz (trimmed-read) files. Before the processing, the integrity of each fastq.gz file is evaluated with its corresponding *.fastq.gz.md5 file. After this evaluation the raw *fastq.gz are QCed by FASTQC, which will output a single report per sample, and by MULTIQC, which will output a single report with all samples. These reports will be outputted and stored in folder . Then, after the trimming with Trim Galore, the generated *.fq.gz files will be finally QCed by FASTQC and MULTIQC. This .nf script does not depend on any .config. The "main.nf" depends on .config ("nextflow_qc.config")
+
+In bash:
+
+conda activate RNA
+
+cd /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc  --> working directory 
+
+#!/usr/bin/env nextflow
+
+nextflow.enable.dsl = 2
+
+// ========================
+// Parameters & Directories
+// ========================
+params.input_dir = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/fastq_gz"
+
+params.results_dir          = "./results"
+params.fastqc_raw_dir       = "${params.results_dir}/fastqc_raw"
+params.trimmed_dir          = "${params.results_dir}/trimmed"
+params.trimmed_reports_dir  = "${params.trimmed_dir}/reports"
+params.fastqc_trimmed_dir   = "${params.trimmed_dir}/fastqc_trimmed"
+params.multiqc_raw_dir      = "${params.results_dir}/multiqc_raw"
+params.multiqc_trimmed_dir  = "${params.results_dir}/multiqc_trimmed"
+params.nextflow_reports_dir = "${params.results_dir}/nextflow_reports"
+
+// ========================
+// Input Channels
+// ========================
+Channel.fromPath("${params.input_dir}/*.fastq.gz")
+    .map { file ->
+        def md5File = file.parent.resolve("${file.name}.md5")
+        tuple(file.simpleName, file, md5File)
+    }
+    .set { all_fastq }
+
+Channel.fromPath("${params.input_dir}/*.fastq.gz.md5")
+    .map { md5File ->
+        def fastqFile = md5File.parent.resolve(md5File.name - ".md5")
+        if (!fastqFile.exists()) tuple(md5File.simpleName, md5File)
+    }
+    .filter { it != null }
+    .set { orphaned_md5 }
+
+// ========================
+// Processes
+// ========================
+process check_md5 {
+    tag { base }
+    errorStrategy 'ignore'
+    cpus 1
+    memory '1.GB'
+    time '10.min'
+
+    input:
+    tuple val(base), path(fastq), path(md5)
+
+    output:
+    path fastq, emit: validated
+    path "${base}_md5.log", emit: log
+
+    script:
+    """
+    set +e
+    log_file="${base}_md5.log"
+
+    if [ -f "${md5}" ]; then
+        if command -v md5sum >/dev/null 2>&1; then
+            computed=\$(md5sum "${fastq}" | cut -d ' ' -f1)
+        elif command -v md5 >/dev/null 2>&1; then
+            computed=\$(md5 -q "${fastq}")
+        else
+            echo "ERROR: No MD5 tool found" > "\$log_file"
+            cp -f "${fastq}" .
+            exit 0
+        fi
+
+        expected=\$(awk '{print \$1}' "${md5}")
+
+        if [ "\$expected" = "\$computed" ]; then
+            echo "SUCCESS: ${base} verified" > "\$log_file"
+        else
+            echo "ERROR: MD5 mismatch for ${base}" > "\$log_file"
+        fi
+    else
+        echo "WARNING: Missing MD5 for ${base}" > "\$log_file"
+    fi
+
+    cp -f "${fastq}" .
+    exit 0
+    """
+}
+
+process check_orphaned_md5 {
+    tag { base }
+    errorStrategy 'ignore'
+    cpus 1
+    memory '1.GB'
+    time '5.min'
+
+    input:
+    tuple val(base), path(md5)
+
+    output:
+    path "${base}_orphaned.log", emit: log
+
+    script:
+    """
+    echo "ERROR: Orphaned MD5 for ${base}" > "${base}_orphaned.log"
+    exit 0
+    """
+}
+
+process fastqc_raw {
+    cpus 2
+    memory '2.GB'
+    time '30.min'
+    publishDir "${params.fastqc_raw_dir}", mode: 'copy'
+
+    input:
+    path fastq
+
+    output:
+    path "${fastq.simpleName}_fastqc.zip", emit: reports
+    path "${fastq.simpleName}_fastqc.html"
+
+    script:
+    """
+    fastqc -q "${fastq}"
+    """
+}
+
+process trim_galore {
+    cpus 4
+    memory '8.GB'
+    time '1.h'
+    tag { fastq.simpleName }
+
+    publishDir "${params.trimmed_dir}", pattern: "*_trimmed.fq.gz", mode: 'copy'
+    publishDir "${params.trimmed_reports_dir}", pattern: "*trimming_report.txt", mode: 'copy'
+
+    input:
+    path fastq
+
+    output:
+    tuple val(fastq.simpleName), path("*_trimmed.fq.gz"), path("*trimming_report.txt"), emit: trimmed
+
+    script:
+    """
+    trim_galore \\
+      --quality 20 \\
+      --length 25 \\
+      --stringency 5 \\
+      --illumina \\
+      --clip_R1 10 \\
+      --three_prime_clip_R1 1 \\
+      --cores ${task.cpus} \\
+      --output_dir . \\
+      "${fastq}"
+    """
+}
+
+process fastqc_trimmed {
+    cpus 2
+    memory '2.GB'
+    time '30.min'
+    publishDir "${params.fastqc_trimmed_dir}", mode: 'copy'
+
+    input:
+    tuple val(base), path(trimmed_fastq), path(trimming_report)
+
+    output:
+    path "${trimmed_fastq.simpleName}_fastqc.zip", emit: reports
+    path "${trimmed_fastq.simpleName}_fastqc.html"
+
+    script:
+    """
+    fastqc -q "${trimmed_fastq}"
+    """
+}
+
+process multiqc_raw {
+    cpus 2
+    memory '4.GB'
+    time '20.min'
+    publishDir "${params.multiqc_raw_dir}", mode: 'copy'
+
+    input:
+    path reports
+
+    output:
+    path "multiqc_report_raw.html"
+
+    script:
+    """
+    mkdir -p raw_reports
+    cp -r ${reports.join(' ')} raw_reports/
+    multiqc -f raw_reports -n multiqc_report_raw.html -o .
+    """
+}
+
+process multiqc_trimmed {
+    cpus 2
+    memory '4.GB'
+    time '20.min'
+    publishDir "${params.multiqc_trimmed_dir}", mode: 'copy'
+
+    input:
+    path reports
+
+    output:
+    path "multiqc_report_trimmed.html"
+
+    script:
+    """
+    mkdir -p trimmed_reports
+    cp -r ${reports.join(' ')} trimmed_reports/
+    multiqc -f trimmed_reports -n multiqc_report_trimmed.html -o .
+    """
+}
+
+process combine_md5_logs {
+    publishDir "${params.results_dir}", mode: 'copy'
+
+    input:
+    path logs
+
+    output:
+    path "verify_md5_integrity.txt"
+
+    script:
+    """
+    echo "MD5 Verification Report" > verify_md5_integrity.txt
+    echo "Generated: \$(date '+%Y-%m-%d %H:%M:%S')" >> verify_md5_integrity.txt
+    echo "----------------------------------------" >> verify_md5_integrity.txt
+    cat *.log >> verify_md5_integrity.txt 2>/dev/null || echo "No validation logs found." >> verify_md5_integrity.txt
+    """
+}
+
+// ========================
+// Workflow
+// ========================
+workflow {
+    check_md5(all_fastq)
+    check_orphaned_md5(orphaned_md5)
+
+    fastqc_raw(check_md5.out.validated)
+
+    trim_galore(check_md5.out.validated)
+    fastqc_trimmed(trim_galore.out.trimmed)
+
+    multiqc_raw(
+        fastqc_raw.out.reports.collect()
+    )
+
+    multiqc_trimmed(
+        fastqc_trimmed.out.reports
+            .mix(trim_galore.out.trimmed.collect { it[2] })
+            .collect()
+    )
+
+    combine_md5_logs(
+        check_md5.out.log
+            .mix(check_orphaned_md5.out.log)
+            .collect()
+    )
+}
+
+
+Run:
+
+NXF_OPTS="-Xms500m -Xmx6g" \
+caffeinate nextflow run main_fastqc_multiqc_trimming.nf
+
+
+(RNA) Franos-MacBook-Pro:nextflow_qc Frano$ NXF_OPTS="-Xms500m -Xmx6g" caffeinate nextflow run main_fastqc_multiqc_trimming.nf
+Nextflow 24.10.6 is available - Please consider updating your version to it
+
+ N E X T F L O W   ~  version 24.10.5
+
+Launching `main_fastqc_multiqc_trimming.nf` [small_mccarthy] DSL2 - revision: 6592249eb5
+
+executor >  local (19)
+[23/f809fa] process > check_md5 (G1_0035-24_M_S32_R1_001)   [100%] 4 of 4 ✔
+[-        ] process > check_orphaned_md5                    -
+[94/083b8d] process > fastqc_raw (4)                        [100%] 4 of 4 ✔
+[ae/82686e] process > trim_galore (G1_0035-24_M_S32_R1_001) [100%] 4 of 4 ✔
+[68/373409] process > fastqc_trimmed (4)                    [100%] 4 of 4 ✔
+[b8/1d4e50] process > multiqc_raw                           [100%] 1 of 1 ✔
+[bd/5a36d8] process > multiqc_trimmed                       [100%] 1 of 1 ✔
+[77/d505af] process > combine_md5_logs                      [100%] 1 of 1 ✔
+Completed at: 25-Apr-2025 01:57:06
+Duration    : 33m 39s
+CPU hours   : 2.2
+Succeeded   : 19
+
+
+Output Structure:
+
+results/
+├── fastqc_raw/            		 # Raw FastQC reports
+│   ├── *.zip
+│   └── *.html
+├── multiqc_raw/				# Combined MultiQC report
+│   └── multiqc_report_raw.html      ← 🔍 Raw FastQC summary
+├── multiqc_trimmed/
+│   └── multiqc_report_trimmed.html  ← 🔧 Trimmed FastQC + trimming stats
+├── trimmed/
+│   ├── *_trimmed.fq.gz       		# Trimmed reads 
+│   └── reports/
+│       └── *_trimming_report.txt		# Trim Galore reports
+│   └── fastqc_trimmed/       		# FastQC reports for trimmed files
+│       ├── *_fastqc.zip
+│       └── *_fastqc.html
+└── verify_md5_integrity.txt  		# Combined MD5 log
+
+
+
+🔍 How to verify if trim_galore (Cutadapt) actually removed bases from 5' and 3' ends?
+
+🧠 Understanding Trim Galore’s Default Behavior
+
+Trim Galore is a wrapper around Cutadapt. It trims:
+
+Adapters (Illumina by default)
+Low-quality ends (based on --quality)
+Can enforce length limits (--length)
+But by default, it does not remove fixed bases at specific positions like:
+
+First 10 bases (5' end)
+From base 71 onward (3' end)
+
+🚫 So if you didn't explicitly request those bases to be trimmed, they were not.
+
+That’s why your "Per Base Sequence Content" plot in MultiQC still fails — those 5'/3' biases from primers/adapters remain in the reads.
+
+✅ What You Need to Do: Explicit Trimming
+
+Update your trim_galore command in the script to force trimming of fixed bases:
+
+✂️ Add these two flags:
+--clip_R1 10 → removes first 10 bases from the 5' end
+--three_prime_clip_R1 30 → removes last 30 bases (100–30 = keeps bases 1–70 if reads are 100bp)
+
+Replace this in the trim_galore process:
+--clip_R1 10 \
+--three_prime_clip_R1 30 \
+
+
+However, the reads from fastq.gz file have a length of 72bp long.
+
+Since your reads are 72 bp long, and you want to:
+
+Remove the first 10 bases → ✅ bases 1–10
+Remove the last base (i.e., base 72) → ✅ just base 72
+Then here’s how you update the trim_galore settings accordingly:
+
+--clip_R1 10
+--three_prime_clip_R1 1
+
+Meaning:
+--clip_R1 10 removes bases 1–10
+--three_prime_clip_R1 1 removes just base 72
+
+Replace this in the trim_galore process:
+--clip_R1 10 \
+--three_prime_clip_R1 1 \
+
+Original:  [1 .............................................. 72]
+Trimmed:      [11 ..................................... 71]   → 61 bases
+             ↳ new base 1         ...          new base 61
+
+✅ So in summary:
+
+✅ --clip_R1 10 → trims first 10 bases (1–10)
+✅ --three_prime_clip_R1 1 → trims last base (72)
+✅ Leaves you with bases 11–71, which is 61 bases total
+
+
+✅ How to verify it worked:
+
+After re-running the pipeline:
+
+Open the "Per Base Sequence Content" plot in the new multiqc_report_trimmed.html
+You should now see:
+A much flatter line after base 1 (bias gone)
+Plot should pass or be significantly improved
+Also check the Trim Galore summary table in MultiQC for:
+Clipped 10 bases from 5' end
+Clipped 1 base from 3' end
+Alternatively, you can:
+
+Look directly at the individual *_trimming_report.txt files
+Use zcat <file> | head -n 8 to visually inspect trimmed reads
+
+
+The next step is the alignment in which its script belongs to a different .nf file.
+

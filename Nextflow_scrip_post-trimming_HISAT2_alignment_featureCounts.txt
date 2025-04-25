@@ -1,0 +1,3768 @@
+Nextflow: To this point, *.fq.gz files has been generated. Due to MacBook Pro specs it wasn't possible to do to big tasks:
+
+- index mouse genome (.fa) with its annotation file (gtf)
+- It was not possible to get the featureCounts using the pre-built GCRm39, its gtf, and using STAR aligner, in addition to computing power. STAR aligner works fast but it requires high RAM (16 or more GB)
+
+Possible solution:
+- Use a mm10 (GRCm38) genome and its gtf
+- Use HISAT2 as aligner. This aligner is slower than STAR, but it has higher alignment efficiency than STAR and used less RAM
+
+IMPORTANT: When using a pre-built indexed genome it has to be dowloaded the .gtf from the same source.
+This means: if we use UCSC mm10 genome, your GTF should match it in chromosome naming and annotation style. 
+Therefore, use Gencode GTF for mm10, which is built with UCSC naming. This is the ideal situation. 
+If there's no source match, then the gtf has to be renamed with prefixes and/or reformat (tabs to spaces) in order to match with the indexed-genome.
+CONCLUSION: both, pre-indexed genome and gtf have to match in terms of source.
+
+** Check rRNA genes contamination: do not confuse between rRNA genes (Examples: Rn45s, mt-Rnr1, mt-Rnr2.), which is contamination and must be removed, with Ribosomal protein genes, which encode proteins that form the ribosomal subunits (e.g., Rpl7a, Rps2) and can stay (do not remove). **
+
+** In case of looking for UCSC genome and chromosome sequences, check this website: https://hgdownload.soe.ucsc.edu/downloads.html#mouse
+
+
+STEPS:
+
+1. cd /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment
+
+2. mkdir -p genome/hisat2_index/mm10
+
+3. cd hisat2_index
+
+4. download the mm10 from HISAT2 downloads
+
+wget https://genome-idx.s3.amazonaws.com/hisat/mm10_genome.tar.gz
+
+5. tar xvf mm10_genome.tar.gz -C /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/hisat2/mm10
+
+6. Go to genome/
+
+7. Create directory
+mkdir gtf
+
+cd gtf
+
+############ USE ENSEMBLE GTF ONLY IF NECESSARY ############
+
+7. Download Ensembl GRCm38 GTF (v97 - common stable release) into gtf directory 
+
+curl -O ftp://ftp.ensembl.org/pub/release-97/gtf/mus_musculus/Mus_musculus.GRCm38.97.gtf.gz
+
+8. gunzip Mus_musculus.GRCm38.97.gtf.gz
+
+9. Rename for clarity
+mv Mus_musculus.GRCm38.97.gtf mm10_GRCm38.ensembl97.gtf
+
+10. Add prefix 'chr' to chromosomes
+
+sed 's/^/chr/' mm10_GRCm38.ensembl97.gtf > mm10_GRCm38.ensembl97.chr.gtf
+
+##########################################################
+################### USE ANOTHER GTF FROM GCRm38 GENOME ##########################################################################
+
+Alternatively: wget "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M25/gencode.vM25.annotation.gtf.gz" 	# for mm10/GCRm38 genome
+This gtf (gencode.vM25.annotation.gtf --> year: 2020 --> https://www.gencodegenes.org/mouse/releases.html):
+- has already chromosome numbers prefixed with "chr"
+- doesn't have any line without "chr"
+- has standard representative line
+- has space separation (invisible character) --> 'gene_id' acceptable format
+- PATH: /genome/gtf
+
+For rRNA genes contamination, follow this scheme:
+1. go to /genome/gtf
+2. Inspect the GTF file for rRNA gene types
+- grep 'gene_type "rRNA"' gencode.vM25.annotation.gtf | head
+3. Filter the GTF for rRNA only: ALTERNATIVES
+A) awk -F'\t' '($0 ~ /^#/) || ($9 ~ /gene_type "(rRNA|Mt_rRNA)"/)' gencode.vM25.annotation.gtf > gencode.vM25_rRNA.gtf  	# includes Mt_rRNA: RECOMMENDED
+B) grep 'gene_type "rRNA"' gencode.vM25.annotation.gtf > gencode.vM25_rRNA2.gtf			# do not include Mt_rRNA: LESS RECOMMENDED, but still useful!
+
+Verify Canonical rRNA Genes:
+- grep -E 'Rn45s|mt-Rnr1' gencode.vM25_rRNA.gtf
+- grep "mt-Rnr1" gencode.vM25_rRNA.gtf		# Check for mitochondrial rRNA (mt-Rnr1)
+- grep "Rn45s" gencode.vM25_rRNA.gtf		# For a strange reason, neither gencode.vM25.annotation.gtf nor gencode.vM25_rRNA.gtf has this gene 
+
+Convert gtf to BED12
+gffread genome/gtf/gencode.vM25.annotation.gtf -T -o - \
+  | awk '$3 == "transcript" { print $1, $4-1, $5, $10, "0", $7 }' OFS='\t' \
+  > genome/BED12/gencode.vM25.annotation.bed12
+
+Make the corresponding changes in "params" in .nf file
+
+Run the script and get the .fq.sorted.bam
+
+Check the strandness of the .fq.gz (of the trimmed sample reads) --> Use BED12 with infer_experiment.py
+
+infer_experiment.py \
+  -r /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/gencode.vM25.annotation.bed12 \
+  -i /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/results/Alignment/G1_0005-24_L_S1.fq.sorted.bam \
+  > strandedness_gencode.vM25.txt
+
+According to the strandness analysis, make the modification either '-s 0','-s 1' (forward-stranded) or '-s 2' (reverse-stranded) in featureCounts paragraph in .nf script. '-s 2' means: reads align to reverse-stranded
+
+** IMPORTANT **
+If strandness is '"+-,-+": 0.6534', maybe it would be better to 'regenerate' the BED12 file. It could be that BED12 file doesn't match the GTF used in featureCounts or infer_experiment.py and this can skew strandedness results and downstream quantification.
+
+Even though gencode.vM25.annotation.bed12 and gencode.vM25.annotation.gtf might appear to describe the same annotation (and come from the same GENCODE release), the BED12 is often not derived directly from the GTF — and that's the key issue.
+
+🔬 GTF vs. BED12 – What They Represent
+
+Format	Represents								Complexity	Primary Use
+GTF	All transcript features (exons, CDS, UTRs, start/stop codons, etc.)		Very detailed	Used in read counting, alignment reference
+BED12	Summary of transcripts (usually just the exonic regions, merged)		Simplified	Used for strandedness estimation, browser visualization
+
+The proposed conversion steps:
+Go to /genome/gtf/
+
+# Convert GTF to genePred (intermediate format)
+gtfToGenePred -genePredExt /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/gencode.vM25.annotation.gtf \
+              /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/gencode.vM25.annotation.genePred
+# Then convert genePred to BED12
+genePredToBed /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/gencode.vM25.annotation.genePred \
+              /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/gencode.vM25.annotation.bed12
+
+This guarantees:
+
+All transcripts in the BED12 match exactly those in the GTF.
+All coordinates and strand info are synchronized.
+infer_experiment.py will now produce cleaner and more confident strandedness inference.
+
+This ensures one-to-one compatibility between GTF and BED12.
+Using mismatched files often leads to strange "ambiguous" or "undetermined" results during strandedness estimation.
+
+At the end, the strandness obtained by the two-step procedure of making GTF to BED12 gave exactly sample result: '"+-,-+": 0.6534'. 
+Then, it's confirm now the reverse-strandness of the reads
+
+
+################################################################################################################################
+
+7. wget http://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/genes/mm10.refGene.gtf.gz
+
+8. gunzip mm10.refGene.gtf.gz
+
+
+Directory structure:
+
+nextflow_alignment/
+├── genome/
+│   └── hisat2_index/
+│       └── mm10/
+│           ├── genome.1.ht2
+│           ├── genome.2.ht2
+│           ├── ... (other index files)
+│           └── genome.8.ht2
+
+
+nextflow_alignment/
+├── genome/
+│   ├── hisat2_index/
+│   │   └── mm10/          # HISAT2 index files
+│   └── gtf/
+│       └── mm10_GRCm38.ensembl97.gtf  # Downloaded GTF
+
+
+9. Verify:
+
+a) GTF compatibility (between *.ht2 vs gtf files) --> chromosome naming
+
+in genome/
+
+# Show first 10 non-comment lines with chromosome names
+grep -v "^#" mouse_chr_fixed.gtf | cut -f1 | head -10
+
+# Find lines WITHOUT "chr" prefix
+grep -v "^#" mouse_chr_fixed.gtf | cut -f1 | grep -v "chr" | head
+
+# Expected (good)
+chr1
+chr1
+chr1
+chr2
+chrX
+chrM
+
+# Expected (bad)
+1
+1
+1
+2
+X
+MT
+
+b) "gene_id" Formatting
+
+# Show a representative line with gene_id
+grep "gene_id" mouse_chr_fixed.gtf | head -1 | sed 's/\t/|/g'
+
+Expected (good)
+chr1|havana|gene|108344807|108347562|.|+|.|gene_id "ENSMUSG00000104478"; gene_version "2"; ...
+
+or
+
+chr1|ensembl|gene|3073253|3074321|.|+|.|gene_id "ENSMUSG00000102693";...
+
+Expected (Bad)
+chr1 ensembl gene 3073253 3074321 . + . gene_id "ENSMUSG00000102693";...
+
+# Check invisible characters
+grep "gene_id" mouse_chr_fixed.gtf | head -1 | cat -A
+
+Expected (good)
+chr1^Ihavana^Igene^I108344807^I108347562^I.^I+^I.^Igene_id "ENSMUSG00000104478"; gene_version "2";
+
+or 
+
+^Ichr1^Iensembl^Igene^I3073253^I3074321^I.^I+^I.^Igene_id "ENSMUSG00000102693";...$
+
+Expected (bad)
+ chr1 ensembl gene 3073253 3074321 . + . gene_id "ENSMUSG00000102693";... 
+
+###################
+# Create a verification script
+cat > check_gtf.sh <<EOF
+#!/bin/bash
+
+echo "1. Chromosome prefixes:"
+grep -v "^#" \$1 | cut -f1 | sort | uniq | head -5
+
+echo -e "\n2. Field separation (| = tab position):"
+grep "gene_id" \$1 | head -1 | sed 's/\t/|/g'
+
+echo -e "\n3. gene_id format example:"
+grep "gene_id" \$1 | head -1 | awk -F'\t' '{print \$9}' | cut -d';' -f1
+EOF
+
+# Make executable and run
+chmod +x check_gtf.sh
+./check_gtf.sh mouse_chr_fixed.gtf
+###################
+
+Expected (good)
+
+(RNA) Franos-MBP:genome Frano$ ./check_gtf.sh mouse_chr_fixed.gtf
+1. Chromosome prefixes:
+chr1
+chr10
+chr11
+chr12
+chr13
+
+2. Field separation (| = tab position):
+chr1|havana|gene|108344807|108347562|.|+|.|gene_id "ENSMUSG00000104478"; gene_version "2"; gene_name "Gm38212"; gene_source "havana"; gene_biotype "TEC";
+
+3. gene_id format example:
+gene_id "ENSMUSG00000104478"
+
+
+Expected (bad)
+(RNA) Franos-MBP:genome Frano$ ./check_gtf.sh /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_GRCm38.ensembl97.gtf
+1. Chromosome prefixes:
+1
+10
+11
+12
+13
+
+2. Field separation (| = tab position):
+1|havana|gene|3073253|3074322|.|+|.|gene_id "ENSMUSG00000102693"; gene_version "1"; gene_name "4933401J01Rik"; gene_source "havana"; gene_biotype "TEC";
+
+3. gene_id format example:
+gene_id "ENSMUSG00000102693"
+
+Here, the only problem is that chromosomes in gtf "mm10" do not show the prefix "chr"
+
+
+10. Modify the mm10 GTF (GRCm38) to add 'chr' prefixes
+
+# Create backup first
+cp mm10_GRCm38.ensembl97.gtf mm10_GRCm38.ensembl97.original.gtf
+
+This backup will create the mm10 'original' and another one .gtf.bak
+
+# Add 'chr' prefixes to chromosome names
+sed -i.bak 's/^/chr/' mm10_GRCm38.ensembl97.gtf
+
+# Verify modification
+head -5 mm10_GRCm38.ensembl97.gtf | cut -f1
+
+It shows 'ch#' in the first lines and this is bad.
+
+# Check chromosome prefixes
+grep -v "^#" mm10_GRCm38.ensembl97.gtf | cut -f1 | head -10
+
+# Check field separation
+grep "gene_id" mm10_GRCm38.ensembl97.gtf | head -1 | sed 's/\t/|/g'
+
+
+If the reformatting went wrong, then use this:
+
+# Restore from backup
+mv mm10_GRCm38.ensembl97.gtf.bak mm10_GRCm38.ensembl97.gtf
+
+# Add 'chr' ONLY to non-comment lines
+sed -i.bak '/^#/! s/^/chr/' mm10_GRCm38.ensembl97.gtf
+
+# Verify the fix
+
+# Check headers
+head -6 mm10_GRCm38.ensembl97.gtf
+
+# Check data lines
+grep -v "^#" mm10_GRCm38.ensembl97.gtf | cut -f1 | head -5
+
+
+Expected Output (good):
+#!genome-build GRCm38.p6
+#!genome-version GRCm38
+#!genome-date 2012-01
+#!genome-build-accession NCBI:GCA_000001635.8
+#!genebuild-last-updated 2019-03
+chr1	havana	gene	3073253	3074322	.	+	.	gene_id "ENSMUSG00000102693";
+
+11. Critical Validation Steps
+
+Confirm Header Integrity:
+grep "^#!" mm10_GRCm38.ensembl97.gtf
+
+# First 5 data lines
+grep -v "^#" mm10_GRCm38.ensembl97.gtf | cut -f1 | head -5
+
+should show:
+chr1
+chr1
+chr1
+chr1
+chr1
+
+Check Gene ID Format:
+grep "gene_id" mm10_GRCm38.ensembl97.gtf | head -1 | cat -A
+
+should show:
+chr1^Ihavana^Igene^I3073253^I3074322^I.^I+^I.^Igene_id "ENSMUSG00000102693"; ...
+
+
+SCRIPT: FOR ONE .fq.gz
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl=2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/G1_0005-24_L_S1_R1_001_trimmed.fq.gz" // Single sample
+params.hisat2_index = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.annotation = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_GRCm38.ensembl97.gtf"
+params.outdir = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch = Channel.value(params.hisat2_index)
+annotation_ch = Channel.value(file(params.annotation))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/Alignment", 
+              mode: 'copy',
+              pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs",
+              mode: 'copy',
+              pattern: "*.log"
+
+    input:
+    val index_prefix
+    tuple val(sample_id), path(read)
+    
+    output:
+    tuple val(sample_id), 
+          path("${sample_id}.sorted.bam"), 
+          path("${sample_id}_hisat2.log")
+    
+    script:
+    """
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           -p 2 | \\
+    samtools sort -@ 2 -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/FeatureCounts", 
+              mode: 'copy',
+              pattern: "*.txt*"
+    
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file annotation
+    
+    output:
+    tuple val(sample_id), 
+          path("${sample_id}_counts.txt"), 
+          path("${sample_id}_counts.txt.summary")
+    
+    script:
+    """
+    featureCounts -T 2 \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${bam}
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", 
+              mode: 'copy'
+    
+    input:
+    path("*")
+    
+    output:
+    path "multiqc_report.html"
+    
+    script:
+    """
+    multiqc . --filename multiqc_report.html
+    """
+}
+
+// ----------------------
+// WORKFLOW (FIXED)
+// ----------------------
+workflow {
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+    counted = FEATURECOUNTS(aligned, annotation_ch)
+    
+    hisat_logs = aligned.map { sample_id, bam, log -> log }
+    fc_summaries = counted.map { sample_id, counts, summary -> summary }
+    
+    MULTIQC(hisat_logs.mix(fc_summaries).collect())
+}
+
+
+EXPECTED OUTPUT in Nextflow terminal:
+
+ N E X T F L O W   ~  version 24.10.5
+
+Launching `main_analysis_star_prebuilt_HISAT2.nf` [furious_bohr] DSL2 - revision: cd6128e8f9
+
+executor >  local (3)
+[d7/1b23e4] ALIGN_HISAT2 (G1_0005-24_L_S1.fq)  [100%] 1 of 1 ✔
+[7c/fc8406] FEATURECOUNTS (G1_0005-24_L_S1.fq) [100%] 1 of 1 ✔
+[19/103e43] MULTIQC                            [100%] 1 of 1 ✔
+
+Completed at: 16-Apr-2025 19:39:28
+Duration    : 31m 17s
+CPU hours   : 0.5
+Succeeded   : 3
+
+Output Validation
+
+Directory		File					Size	Status
+Alignment		G1_0005-24_L_S1.fq.sorted.bam		742 MB	✅ Good
+FeatureCounts		G1_0005-24_L_S1.fq_counts.txt		23 MB	✅ Good
+FeatureCounts		G1_0005-24_L_S1.fq_counts.txt.summary	397 B	✅ Good
+MultiQC	multiqc_report.html					4.6 MB	✅ Good
+
+Expected Output Structure
+
+results/
+├── Alignment/
+│   ├── G1_0005-24_L_S1.sorted.bam
+│   └── logs/
+│       └── G1_0005-24_L_S1_hisat2.log
+├── FeatureCounts/
+│   ├── G1_0005-24_L_S1_counts.txt
+│   └── G1_0005-24_L_S1_counts.txt.summary
+└── MultiQC/
+    └── multiqc_report.html
+
+
+
+Next Steps: Verifications (bash)
+
+1. (RNA) Franos-MBP:~ Frano$ cd /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/results/MultiQC
+
+open MultiQC/multiqc_report.html
+
+
+The content of the 'G1_0005-24_L_S1.fq_hisat2.log'
+
+33249713 reads; of these:
+  33249713 (100.00%) were unpaired; of these:
+    1473053 (4.43%) aligned 0 times
+    28651969 (86.17%) aligned exactly 1 time
+    3124691 (9.40%) aligned >1 times
+95.57% overall alignment rate
+
+Content of "G1_0005-24_L_S1.fq_counts.txt.summary
+
+Status	G1_0005-24_L_S1.fq.sorted.bam
+Assigned	24726724
+Unassigned_Unmapped	1473053
+Unassigned_Read_Type	0
+Unassigned_Singleton	0
+Unassigned_MappingQuality	0
+Unassigned_Chimera	0
+Unassigned_FragmentLength	0
+Unassigned_Duplicate	0
+Unassigned_MultiMapping	8944594
+Unassigned_Secondary	0
+Unassigned_NonSplit	0
+Unassigned_NoFeatures	2299137
+Unassigned_Overlapping_Length	0
+Unassigned_Ambiguity	1626108
+
+Slice of "G1_0005-24_L_S1.fq_counts.txt"
+
+# Program:featureCounts v2.0.6; Command:"featureCounts" "-T" "2" "-a" "mm10_GRCm38.ensembl97.gtf" "-o" "G1_0005-24_L_S1.fq_counts.txt" "G1_0005-24_L_S1.fq.sorted.bam" 
+Geneid	Chr	Start	End	Strand	Length	G1_0005-24_L_S1.fq.sorted.bam
+ENSMUSG00000102693	chr1	3073253	3074322	+	1070	0
+ENSMUSG00000064842	chr1	3102016	3102125	+	110	0
+ENSMUSG00000051951	chr1;chr1;chr1;chr1;chr1;chr1;chr1	3205901;3206523;3213439;3213609;3214482;3421702;3670552	3207317;3207317;3215632;3216344;3216968;3421901;3671498	-;-;-;-;-;-;-	6094	0
+ENSMUSG00000102851	chr1	3252757	3253236	+	480	0
+ENSMUSG00000103377	chr1	3365731	3368549	-	2819	0
+ENSMUSG00000104017	chr1	3375556	3377788	-	2233	0
+ENSMUSG00000103025	chr1	3464977	3467285	-	2309	0
+ENSMUSG00000089699	chr1;chr1	3466587;3513405	3466687;3513553	+;+	250	0
+ENSMUSG00000103201	chr1	3512451	3514507	-	2057	0
+
+
+
+ANALYSIS:
+
+Based on the outputs, the alignment and featureCounts steps were successfully executed, but there are some important considerations:
+
+1. Alignment Quality (HISAT2)
+
+Key Metrics:
+
+Overall alignment rate: 95.57% (Excellent for bulk RNA-seq)
+Multi-mapping rate: 9.40% (Within normal range for mouse transcriptome)
+Unmapped reads: 4.43% (Good)
+
+
+Missing sjdbOverhang (STAR) Consideration:
+
+What's Missing: The HISAT2 command lacks --sjdbOverhang 61, which specifies overhang length for splice junctions.
+Impact: HISAT2 auto-detects read length, but explicit setting improves splice-aware alignment.
+Recommendation: Add this to your alignment command. Other sources say it's not necessary to add this because "--sjdbOverhang" is only for STAR
+
+hisat2 ... --sjdbOverhang 61 ...
+
+2. featureCounts Results
+
+a) Key Metrics:
+
+Assigned Reads: 24,726,724 (74.4% of total)
+Unassigned:
+Multi-mapping: 8,944,594 (26.9%)
+No Features: 2,299,137 (6.9%)
+Critical Observations:
+
+b) Multi-mapped Reads:
+High percentage (26.9%) is normal for RNA-seq
+Recommendation: Use -M in featureCounts to count multi-mapped reads:
+
+featureCounts ... -M ...
+
+c) No Features:
+Likely due to:
+Non-polyA RNAs (rRNA, etc.)
+Novel transcripts not in GTF
+Recommendation: Check if your GTF includes non-coding RNAs
+
+d) Gene Counts:
+Many genes (e.g., ENSMUSG00000102693) show 0 counts
+Normal: Indicates tissue-specific expression (liver/muscle may not express all genes)
+Verify: Check housekeeping genes (e.g., Actb, Gapdh) for non-zero counts
+
+
+3. Critical Validation Steps
+
+Check These in MultiQC Report:
+
+Sequence Duplication Levels (should be <50% for RNA-seq)
+GC Content Distribution (should match species expectations)
+5'→3' Bias (should be <2:1 ratio)
+
+
+4. Final Assessment
+
+Aspect				Status		Notes
+Alignment			✅ Good		High alignment rate, needs splice param
+Quantification			⚠️ Fair		High multi-mapping, adjust parameters
+Output Integrity			✅ Good		Files structured correctly
+Biological Relevance		⚠️ Check		Zero counts need biological validation
+
+
+INSTALLATION OF ADDITIONAL DEPENDENCIES FOR RNAseq ANALYSIS
+
+RSeQC (Required for infer_experiment.py)
+
+Purpose:
+
+Analyzes RNA-seq data quality
+Key Function in Your Workflow:
+infer_experiment.py: Determines library strandedness
+
+
+pip install RSeQC pyBigWig
+
+RSeQC Verification
+
+which infer_experiment.py
+# Should return: /opt/anaconda3/envs/RNA/bin/infer_experiment.py
+
+Picard (Required for MarkDuplicates)
+
+Purpose:
+
+Handles SAM/BAM files and calculates duplicate rates
+Key Function in Your Workflow:
+MarkDuplicates: Estimates library complexity
+
+# Download Picard (replace with latest version from https://github.com/broadinstitute/picard/releases)
+
+wget https://github.com/broadinstitute/picard/releases/download/3.3.0/picard.jar -P ~/bin/
+
+# Add to your PATH
+
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bash_profile
+source ~/.bash_profile
+
+
+Alternative Strandedness Check
+
+If RSeQC installation fails completely, use this samtools-based approach:
+
+process STRANDEDNESS {
+    // ... other parts same as before ...
+    script:
+    """
+    samtools view -f 0x10 ${bam} | head -n 10000 | \
+    awk '{if($2 == 0) fw++; if($2 == 16) rev++} END {print "Forward: "fw"\\nReverse: "rev}' \
+    > ${sample_id}_strandedness.txt
+    """
+}
+
+
+Last things: 
+
+1. Understanding params.rrna_gtf
+
+Purpose: Contains rRNA gene annotations to quantify ribosomal RNA contamination
+Why Needed:
+Estimates rRNA contamination level (common QC metric)
+Generated from your main GTF by filtering for rRNA features
+
+2. Creating mm10_refGene_rRNA.gtf
+
+# Navigate to GTF directory
+cd /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf
+
+# Filter rRNA features from main GTF
+grep 'gene_biotype "rRNA"' mm10.refGene.gtf > mm10_refGene_rRNA.gtf		# grep 'gene_id "Rrn' mm10.refGene.gtf > mm10_refGene_rRNA.gtf
+
+# Verify creation
+head mm10_refGene_rRNA.gtf			
+
+3. (Another) Verification
+
+After creating mm10_refGene_rRNA.gtf:
+
+grep -o -i "rRNA" mm10_refGene_rRNA.gtf | wc -l		# grep looks for a pattern, isolate the instances of the word and then pipes to wc
+grep -o -i "\brRNA\b" mm10_refGene_rRNA.gtf | wc -l	# \b is a word boundary. This ensures that we only match the whole word "rRNA"
+
+wc -l mm10_refGene_rRNA.gtf			# It only counts lines in this file
+
+4. RSeQC package uses "infer_experiment.py", which expects a BED12 format file to describe genes/transcripts — not a GTF. 
+You’ll need to convert your GTF to BED12 format using gtf2bed12, gffread, or bedops.
+
+a) Install gffread, 'ucsc-gtftogenepred' and 'ucsc-genepredtobed':
+
+conda install -c bioconda gffread ucsc-gtftogenepred ucsc-genepredtobed
+
+b) go to 'genome':
+
+cd /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome
+
+c) Make output folder
+
+mkdir -p BED12
+
+Alternative 1 (not recommended)
+
+d) Convert GTF to GenePred format
+gtfToGenePred gtf/mm10.refGene.gtf BED12/tmp.genepred
+
+e) Convert GenePred to BED12
+genePredToBed BED12/tmp.genepred BED12/mm10.refGene.bed12
+
+f) Clean up
+rm BED12/tmp.genepred
+
+Alternative 2 (recommended) --> go to /nextflow_alignment
+
+gffread genome/gtf/mm10.refGene.gtf -T -o - \
+  | awk '$3 == "transcript" { print $1, $4-1, $5, $10, "0", $7 }' OFS='\t' \
+  > genome/BED12/mm10_refGene.bed12
+
+
+g) Use BED12 with infer_experiment.py
+
+for alternative 1
+
+infer_experiment.py \
+  -r /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/mm10_GRCm38.ensembl97.bed12 \
+  -i /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/results/Alignment/G1_0005-24_L_S1.fq.sorted.bam \
+  > strandedness_test.txt
+
+for alternative 2  --> go to /genome
+
+infer_experiment.py \
+  -r /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/mm10_refGene.bed12 \
+  -i /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/results/Alignment/G1_0005-24_L_S1.fq.sorted.bam \
+  > strandedness_test_refGene.txt
+
+h) Check the 'strandedness_test.txt' or 'strandedness_test_refGene.txt', which is in /genome
+
+Output: 'strandedness_test.txt'
+
+This is SingleEnd Data
+Fraction of reads failed to determine: 0.3396
+Fraction of reads explained by "++,--": 0.0070
+Fraction of reads explained by "+-,-+": 0.6534
+
+
+Output: 'strandedness_test_refGene.txt'
+
+This is SingleEnd Data
+Fraction of reads failed to determine: 0.0124
+Fraction of reads explained by "++,--": 0.0078
+Fraction of reads explained by "+-,-+": 0.9798
+
+
+Interpretation:
+
+🧬 Strandedness Summary
+Data Type: Single-end
+"++ / --" fraction: 0.0070 → very low
+"+- / -+" fraction: 0.6534 → high
+Failed to determine: ~33.96% → not uncommon for low-complexity or rRNA-rich regions
+
+'strandedness_test_refGene.txt'
+98% of reads align to reverse-stranded transcripts → -s 2 is 100% correct.
+Only 1.2% ambiguous reads (vs. 33% before!) — big win. 🎯
+
+🧭 Conclusion:
+Your library is strand-specific (aka stranded), and more precisely it's:
+
+🔁 Reverse-stranded (a.k.a. Second strand or "fr-firststrand" in featureCounts).
+
+With this information, the script in "PROCESS: FEATURECOUNTS" has to change from "-s 1", which means Forward-stranded, to "-s 2" (Reverse-stranded)
+
+Option	Strand Type		Description
+-s 0	Unstranded		Any orientation
+-s 1	Forward-stranded		Reads map to same strand as gene
+-s 2	Reverse-stranded		Reads map to opposite strand ✅
+
+
+
+✅ Summary:
+
+Component		Source				Format		Compatible
+Genome index		HISAT2 prebuilt (UCSC mm10)	chr* names	✅
+Annotation (GTF)		UCSC refGene.gtf			chr* names	✅
+Read strandedness	Reverse-stranded			-s 2		✅
+
+
+
+ULTIMATE SCRIPT VERSION (This final version includes all necessary quality metrics and absolute paths for reproducibility)
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads        = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/G1_0005-24_L_S1_R1_001_trimmed.fq.gz"
+params.hisat2_index = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.annotation   = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_GRCm38.ensembl97.gtf"
+params.rrna_gtf     = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_refGene_rRNA.gtf"
+params.picard_path  = "/Users/Frano/bin/picard.jar"
+params.outdir       = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch      = Channel.value(params.hisat2_index)
+annotation_ch = Channel.value(file(params.annotation))
+rrna_gtf_ch   = Channel.value(file(params.rrna_gtf))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/Alignment", mode: 'copy', pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs", mode: 'copy', pattern: "*.log"
+
+    input:
+    val index_prefix
+    tuple val(sample_id), path(read)
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.sorted.bam"),
+          path("${sample_id}_hisat2.log")
+
+    script:
+    """
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           --seed 42 \\
+           -p 2 | \\
+    samtools sort -@ 2 -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/FeatureCounts", mode: 'copy', pattern: "*.txt*"
+
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file annotation
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}_counts.txt"),
+          path("${sample_id}_counts.txt.summary")
+
+    script:
+    """
+    featureCounts -T 2 \\
+                  -M \\
+                  -s 2 \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${bam}
+    """
+}
+
+// ----------------------
+// PROCESS: QC METRICS
+// ----------------------
+process QC_METRICS {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/qc_metrics", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam)
+    file annotation
+    file rrna_gtf
+
+    output:
+    tuple path("${sample_id}_rrna_counts.txt"),
+          path("${sample_id}_strandedness.txt"),
+          path("${sample_id}_dup_metrics.txt")
+
+    script:
+    """
+    # rRNA contamination
+    featureCounts -T 1 -a ${rrna_gtf} -o ${sample_id}_rrna_counts.txt ${bam}
+
+    # Strandedness check
+    infer_experiment.py -r ${annotation} -i ${bam} > ${sample_id}_strandedness.txt 2>&1 || true
+
+    # Library complexity
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=/dev/null \\
+        M=${sample_id}_dup_metrics.txt \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC REPORT
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*hisat2.log"
+    path "*counts.txt.summary"
+    path "*rrna_counts.txt"
+    path "*strandedness.txt"
+    path "*dup_metrics.txt"
+
+    output:
+    path "multiqc_report.html"
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_report.html \\
+        --module hisat2 \\
+        --module featurecounts \\
+        --module picard \\
+        --module custom_content \\
+        --cl-config "extra_fn_clean_exts: [ '_strandedness', '_rrna_counts' ]"
+    """
+}
+
+// ----------------------
+// WORKFLOW DEFINITION
+// ----------------------
+workflow {
+    // Run core processes
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+    counted = FEATURECOUNTS(aligned, annotation_ch)
+    qc_metrics = QC_METRICS(aligned, annotation_ch, rrna_gtf_ch)
+
+    // Extract individual output files
+    hisat_logs   = aligned.map { sample_id, bam, log -> log }
+    fc_summaries = counted.map { sample_id, counts, summary -> summary }
+    rrna_counts  = qc_metrics.map { rrna, strand, dup -> rrna }
+    strandedness = qc_metrics.map { rrna, strand, dup -> strand }
+    dup_metrics  = qc_metrics.map { rrna, strand, dup -> dup }
+
+    // ✅ Pass each QC stream directly into MultiQC
+    MULTIQC(hisat_logs, fc_summaries, rrna_counts, strandedness, dup_metrics)
+}
+
+
+
+
+Execution:
+
+# Clean previous results (optional)
+rm -rf ${params.outdir}/work
+
+# Run pipeline
+
+NXF_OPTS="-Xms500m -Xmx6g" caffeinate nextflow run main_analysis_star_prebuilt_HISAT2.nf \
+    -profile conda \
+    -resume
+
+or
+
+NXF_OPTS="-Xms500m -Xmx6g" caffeinate nextflow run main_analysis_star_prebuilt_HISAT2.nf \
+    -profile conda \
+    -with-report execution_report.html \
+    -with-timeline execution_timeline.html \
+
+
+(RNA) Franos-MBP:nextflow_alignment Frano$ NXF_OPTS="-Xms500m -Xmx6g" caffeinate nextflow run main_analysis_star_prebuilt_HISAT2.nf
+
+ N E X T F L O W   ~  version 24.10.5
+
+Launching `main_analysis_star_prebuilt_HISAT2.nf` [kickass_golick] DSL2 - revision: 89dd930deb
+
+executor >  local (2)
+[e7/ad2f16] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)  [  0%] 0 of 1 ✔ 		# Even when it shows 0% as long as it has ✔ means that the task was successfully finished.
+executor >  local (3)
+[e7/ad2f16] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)  [100%] 1 of 1 ✔
+executor >  local (3)
+[e7/ad2f16] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)  [100%] 1 of 1 ✔
+executor >  local (4)
+[e7/ad2f16] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)  [100%] 1 of 1 ✔
+[f9/544fef] process > FEATURECOUNTS (G1_0005-24_L_S1.fq) [100%] 1 of 1 ✔
+[97/4da0de] process > QC_METRICS (G1_0005-24_L_S1.fq)    [100%] 1 of 1 ✔
+[84/9892ff] process > MULTIQC (1)                        [100%] 1 of 1 ✔
+Completed at: 17-Apr-2025 00:27:14
+Duration    : 51m 34s
+CPU hours   : 0.9
+Succeeded   : 4
+
+
+IMPORTANT: Since the process takes time, every time running the file .nf, it should be with the command 'caffeinate', so that the computer doesn't go into sleep mode.
+For example:
+
+caffeinate nextflow run main_analysis.nf		# It doesn't sleeps indefinitely
+caffeinate -t 10800 nextflow run main_analysis.nf	# The computer is awake for only 3 hours
+caffeinate -i nextflow run main_analysis.nf	# The screen turns off but it's not sleeping
+caffeinate nextflow run main_analysis.nf -resume
+
+
+While HISAT2 runs, you can monitor memory usage with:
+
+top -o mem
+ 
+
+For one .fq.gz of 980MB to 1GB
+
+1. Expected Timeline Confirmation
+
+Process			Estimated Duration	Status
+HISAT2 Alignment		25-35 mins		✅ Running
+FeatureCounts		5-10 mins		Queued
+rRNA Check		2-5 mins			Queued
+Strandedness		1-2 mins			Queued
+Picard Dups		3-7 mins			Queued
+MultiQC Report		1 min			Final Step
+Total Estimated Time: 	~40-50 minutes
+
+2. Check progress:
+
+# Watch alignment progress
+tail -f work/*/*.log | grep 'Aligned'
+
+# Monitor file sizes
+watch -n 60 'du -sh work/*'
+
+Key Files to Watch:
+
+work/*/G1_0005-24_L_S1.sorted.bam (growing file)
+work/*/G1_0005-24_L_S1_hisat2.log (alignment stats)
+
+
+3. Final Output Validation
+After completion, verify:
+
+# Check MultiQC report structure
+ls -lh results/MultiQC/multiqc_report.html  # Should be >4MB
+
+# Verify BAM integrity
+samtools quickcheck results/Alignment/G1_0005-24_L_S1.fq.sorted.bam
+
+# Check gene counts
+head -n 10 results/FeatureCounts/G1_0005-24_L_S1.fq_counts.txt
+
+4. Critical Success Metrics
+
+In the MultiQC report:
+
+HISAT2:
+	Overall alignment rate >70%
+	Multi-mapping rate <15%
+featureCounts:
+	Assigned reads >60% of total
+	rRNA contamination <5%
+Picard:
+	Duplicate rate <30%
+
+
+5. Next Steps After Success
+
+Scale to All Samples:
+Change params.reads to:
+
+params.reads = "/path/to/trimmed/*.fq.gz"
+
+Adjust Strandedness:
+Based on results/strandedness/*.txt, update:
+
+// -s 0 (unstranded), -s 1 (stranded), -s 2 (reversely stranded)
+featureCounts ... -s 1 ...
+
+Cleanup
+
+rm -rf work/ .nextflow.log*
+
+
+
+###################
+LAST(S) SCRIPTS IMPROVEMENTS
+###################
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads        = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/G1_0005-24_L_S1_R1_001_trimmed.fq.gz"
+params.hisat2_index = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.annotation   = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10.refGene.gtf"
+params.rrna_gtf     = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_refGene_rRNA.gtf"
+params.picard_path  = "/Users/Frano/bin/picard.jar"
+params.outdir       = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch      = Channel.value(params.hisat2_index)
+annotation_ch = Channel.value(file(params.annotation))
+rrna_gtf_ch   = Channel.value(file(params.rrna_gtf))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/Alignment", mode: 'copy', pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs", mode: 'copy', pattern: "*.log"
+
+    input:
+    val index_prefix
+    tuple val(sample_id), path(read)
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.sorted.bam"),
+          path("${sample_id}_hisat2.log")
+
+    script:
+    """
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           --seed 42 \\
+           -p 2 | \\
+    samtools sort -@ 2 -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+// ----------------------
+// PROCESS: REMOVE DUPLICATES
+// ----------------------
+process REMOVE_DUPLICATES {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/dedup", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.dedup.bam")
+
+    script:
+    """
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=${sample_id}.dedup.bam \\
+        M=${sample_id}.dedup_metrics.txt \\
+        REMOVE_DUPLICATES=true \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/FeatureCounts", mode: 'copy', pattern: "*.txt*"
+
+    input:
+    tuple val(sample_id), path(dedup_bam), path(hisat_log)
+    file annotation
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}_counts.txt"),
+          path("${sample_id}_counts.txt.summary")
+
+    script:
+    """
+    featureCounts -T 2 \\
+                  -M \\
+                  -s 2 \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${dedup_bam}
+    """
+}
+
+// ----------------------
+// PROCESS: QC METRICS
+// ----------------------
+process QC_METRICS {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/qc_metrics", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file annotation
+    file rrna_gtf
+
+    output:
+    tuple path("${sample_id}_rrna_counts.txt"),
+          path("${sample_id}_strandedness.txt"),
+          path("${sample_id}_dup_metrics.txt")
+
+    script:
+    """
+    # rRNA contamination
+    featureCounts -T 1 -a ${rrna_gtf} -o ${sample_id}_rrna_counts.txt ${dedup_bam}
+
+    # Strandedness check
+    infer_experiment.py -r ${annotation} -i ${dedup_bam} > ${sample_id}_strandedness.txt 2>&1 || true
+
+    # Library complexity
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${dedup_bam} \\
+        O=/dev/null \\
+        M=${sample_id}_dup_metrics.txt \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*hisat2.log"
+    path "*counts.txt.summary"
+    path "*rrna_counts.txt"
+    path "*strandedness.txt"
+    path "*dup_metrics.txt"
+
+    output:
+    path "multiqc_report.html"
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_report.html \\
+        --module hisat2 \\
+        --module featurecounts \\
+        --module picard \\
+        --module custom_content \\
+        --cl-config "extra_fn_clean_exts: [ '_strandedness', '_rrna_counts' ]"
+    """
+}
+
+// ----------------------
+// WORKFLOW DEFINITION
+// ----------------------
+workflow {
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+
+    // Dedup BAMs
+    deduped = REMOVE_DUPLICATES(aligned.map { sample_id, bam, log -> tuple(sample_id, bam) })
+
+    // Join dedup BAMs with logs for downstream
+    hisat_logs = aligned.map { sample_id, bam, log -> tuple(sample_id, log) }
+
+    counted = FEATURECOUNTS(deduped.join(hisat_logs), annotation_ch)
+    qc_metrics = QC_METRICS(deduped.join(hisat_logs), annotation_ch, rrna_gtf_ch)
+
+    // Prepare MultiQC input
+    hisat_logs   = aligned.map { sample_id, bam, log -> log }
+    fc_summaries = counted.map { sample_id, counts, summary -> summary }
+    rrna_counts  = qc_metrics.map { rrna, strand, dup -> rrna }
+    strandedness = qc_metrics.map { rrna, strand, dup -> strand }
+    dup_metrics  = qc_metrics.map { rrna, strand, dup -> dup }
+    
+    MULTIQC(hisat_logs, fc_summaries, rrna_counts, strandedness, dup_metrics)
+
+}
+
+############################
+LAST SCRIPT WITH BED12 FILE
+############################
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads        = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/G1_0005-24_L_S1_R1_001_trimmed.fq.gz"
+params.hisat2_index = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.annotation   = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10.refGene.gtf"
+params.bed12        = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/mm10_refGene.bed12"
+params.rrna_gtf     = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_refGene_rRNA.gtf"
+params.picard_path  = "/Users/Frano/bin/picard.jar"
+params.outdir       = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch      = Channel.value(params.hisat2_index)
+annotation_ch = Channel.value(file(params.annotation))
+bed12_ch      = Channel.value(file(params.bed12))
+rrna_gtf_ch   = Channel.value(file(params.rrna_gtf))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/Alignment", mode: 'copy', pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs", mode: 'copy', pattern: "*.log"
+
+    input:
+    val index_prefix
+    tuple val(sample_id), path(read)
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.sorted.bam"),
+          path("${sample_id}_hisat2.log")
+
+    script:
+    """
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           --seed 42 \\
+           -p 2 | \\
+    samtools sort -@ 2 -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+// ----------------------
+// PROCESS: REMOVE DUPLICATES
+// ----------------------
+process REMOVE_DUPLICATES {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/dedup", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.dedup.bam"), path("${sample_id}_dedup_metrics.txt")
+
+    script:
+    """
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=${sample_id}.dedup.bam \\
+        M=${sample_id}_dedup_metrics.txt \\
+        REMOVE_DUPLICATES=true \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS (deduplicated BAM)
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/FeatureCounts", mode: 'copy', pattern: "*.txt*"
+
+    input:
+    tuple val(sample_id), path(dedup_bam), path(hisat_log)
+    file annotation
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}_counts.txt"),
+          path("${sample_id}_counts.txt.summary")
+
+    script:
+    """
+    featureCounts -T 2 \\
+                  -M \\
+                  -s 2 \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${dedup_bam}
+    """
+}
+
+// ----------------------
+// PROCESS: QC METRICS (raw BAM for QC)
+// ----------------------
+process QC_METRICS {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/qc_metrics", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file bed12
+    file rrna_gtf
+
+    output:
+    tuple path("${sample_id}_rrna_counts.txt"),
+          path("${sample_id}_strandedness.txt"),
+          path("${sample_id}_raw_dup_metrics.txt")
+
+    script:
+    """
+    # rRNA quantification (raw BAM)
+    featureCounts -T 1 -a ${rrna_gtf} -o ${sample_id}_rrna_counts.txt ${bam}
+
+    # Strandedness check using BED12
+    infer_experiment.py -r ${bed12} -i ${bam} > ${sample_id}_strandedness.txt 2>&1
+
+    # Duplication metrics (raw BAM)
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=/dev/null \\
+        M=${sample_id}_raw_dup_metrics.txt \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*hisat2.log"
+    path "*counts.txt.summary"
+    path "*rrna_counts.txt"
+    path "*strandedness.txt"
+    path "*raw_dup_metrics.txt"
+    path "*dedup_metrics.txt"
+
+    output:
+    path "multiqc_report.html"
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_report.html \\
+        --module hisat2 \\
+        --module featurecounts \\
+        --module picard \\
+        --module custom_content \\
+        --cl-config "extra_fn_clean_exts: [ '_strandedness', '_rrna_counts' ]"
+    """
+}
+
+// ----------------------
+// WORKFLOW DEFINITION
+// ----------------------
+workflow {
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+
+    deduped = REMOVE_DUPLICATES(aligned.map { sample_id, bam, log -> tuple(sample_id, bam) })
+
+    hisat_logs = aligned.map { sample_id, bam, log -> tuple(sample_id, log) }
+
+    counted = FEATURECOUNTS(deduped.combine(hisat_logs), annotation_ch)
+
+    qc_metrics = QC_METRICS(aligned, bed12_ch, rrna_gtf_ch)
+
+    // MultiQC Inputs
+    hisat2_logs     = aligned.map { sample_id, bam, log -> log }
+    counts_summary  = counted.map { sample_id, counts, summary -> summary }
+    rrna_counts     = qc_metrics.map { rrna, strand, dup -> rrna }
+    strand_metrics  = qc_metrics.map { rrna, strand, dup -> strand }
+    raw_dup_metrics = qc_metrics.map { rrna, strand, dup -> dup }
+    dedup_metrics   = deduped.map { sample_id, bam, dedup -> dedup }
+
+    MULTIQC(hisat2_logs, counts_summary, rrna_counts, strand_metrics, raw_dup_metrics, dedup_metrics)
+}
+
+NXF_OPTS="-Xms500m -Xmx6g" \
+caffeinate nextflow run main_analysis_star_prebuilt_HISAT2.nf \
+  -profile conda \
+  -with-report execution_report.html \
+  -with-timeline execution_timeline.html
+
+or
+
+NXF_OPTS="-Xms500m -Xmx6g" \
+caffeinate nextflow run main_analysis_star_prebuilt_HISAT2.nf \
+  -profile conda \
+  -with-report execution_report.html \
+  -with-timeline execution_timeline.html \
+  -resume
+
+
+(RNA) Franos-MBP:nextflow_alignment Frano$ NXF_OPTS="-Xms500m -Xmx6g" \
+> caffeinate nextflow run main_analysis_star_prebuilt_HISAT2.nf \
+>   -profile conda \
+>   -with-report execution_report.html \
+>   -with-timeline execution_timeline.html
+
+ N E X T F L O W   ~  version 24.10.5
+
+Launching `main_analysis_star_prebuilt_HISAT2.nf` [trusting_mclean] DSL2 - revision: 061a66f460
+
+executor >  local (4)
+[2c/7a3229] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)      [100%] 1 of 1 ✔
+[28/269c36] process > REMOVE_DUPLICATES (G1_0005-24_L_S1.fq) [100%] 1 of 1 ✔
+executor >  local (4)
+[2c/7a3229] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)      [100%] 1 of 1 ✔
+[28/269c36] process > REMOVE_DUPLICATES (G1_0005-24_L_S1.fq) [100%] 1 of 1 ✔
+executor >  local (5)
+[2c/7a3229] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)      [100%] 1 of 1 ✔
+[28/269c36] process > REMOVE_DUPLICATES (G1_0005-24_L_S1.fq) [100%] 1 of 1 ✔
+[11/391b23] process > FEATURECOUNTS (G1_0005-24_L_S1.fq)     [100%] 1 of 1 ✔
+[86/21e187] process > QC_METRICS (G1_0005-24_L_S1.fq)        [100%] 1 of 1 ✔
+[83/d54113] process > MULTIQC (1)                            [100%] 1 of 1 ✔
+WARN: Task runtime metrics are not reported when using macOS without a container engine
+Completed at: 17-Apr-2025 11:40:54
+Duration    : 27m 44s
+CPU hours   : 0.5
+Succeeded   : 5
+
+
+File					Stage				Used By
+G1_0005-24_L_S1.fq.sorted.bam		Output from ALIGN_HISAT2		Used by QC_METRICS, and input for REMOVE_DUPLICATES
+G1_0005-24_L_S1.dedup.bam			Output from REMOVE_DUPLICATES	✅ Used by FEATURECOUNTS
+G1_0005-24_L_S1_counts.txt		Output from FEATURECOUNTS		✅ The actual gene counts
+
+
+Stages: Using HISAT2 - FeatureCounts 
+
+1) ALIGNMENT 					HISAT2 			(G1_0005-24_L_S1.fq.sorted.bam)
+2) FIND/REMOVE_DUPLICATES 			MarkDuplicates/PICARD	(G1_0005-24_L_S1.dedup.bam)
+3) FEATURECOUNTS					GENE-LEVEL COUNTS	(G1_0005-24_L_S1_counts.txt)
+4) DESEQ2 (in R)
+
+
+Folder structure (if the script is adapted to process multiple samples)
+
+results/
+├── Alignment/
+│   ├── Sample1.sorted.bam
+│   ├── Sample2.sorted.bam
+│   ├── ...
+│   └── logs/
+│       ├── Sample1_hisat2.log
+│       ├── ...
+├── dedup/
+│   ├── Sample1.dedup.bam
+│   └── Sample1_dedup_metrics.txt
+├── FeatureCounts/
+│   ├── Sample1_counts.txt
+│   ├── Sample1_counts.txt.summary
+├── qc_metrics/
+│   ├── Sample1_rrna_counts.txt
+│   ├── Sample1_strandedness.txt
+│   └── Sample1_raw_dup_metrics.txt
+├── MultiQC/
+│   └── multiqc_report.html
+
+
+
+
+
+📊 Better Strandedness in New Script = Tighter Counting
+
+The improved pipeline uses:
+
+BED12 → Accurate intron-exon context
++-,-+ = 97.98% = clear stranded protocol (confirming that -s 2 is correct!)
+But due to stricter QC and filtering, only ~43% of reads were assigned — which is common in mammalian RNA-seq, especially if:
+	Many reads map outside features
+	Annotation (refGene) is incomplete vs. Ensembl
+	Transcriptome diversity is high
+So, the “drop” in assigned reads is actually a gain in data trustworthiness.
+
+
+
+🧠 Summary of Key Differences between script without and with BED12
+
+
+Aspect				✅ Improved Script (BED12, raw QC)		🟢 Previous Script (simpler, dedup QC)
+Strandedness analysis		Performed using BED12 → much more accurate 	✅ Done on GTF → less accurate, especially for infer_experiment.py
+rRNA contamination check		Done on raw BAM ✅				Done on dedup BAM 🟡 (can undercount contamination)
+Duplication metrics		✅ Both raw and dedup metrics captured		Only deduplication metrics
+Counts (featureCounts)		Done on deduplicated BAM ✅			Same ✅
+Unassigned_NoFeatures		~5.2M = 43% assigned				~8.4M = 75% assigned 🟢
+Strandedness detection		+-,-+ = ~98%, low failure rate ✅			+-,-+ = 65%, 34% failure 🟡
+Alignment rate (HISAT2)		95.57% (same)					95.57%
+Duplication rate (raw)		83.98% (same in both raw and dedup metrics)	83.98% (but from dedup BAM)
+
+
+Why you should work with BED12gtfm look for strandness, and find/remove duplicated reads
+
+Decision Point					Recommended Approach	Why
+Use BED12 for strandedness			✅ Yes			Much more accurate for infer_experiment.py
+QC metrics from raw BAM				✅ Yes			Reflects true library state (e.g. duplication, contamination)
+Gene counts from deduplicated BAM			✅ Yes			Reduces false positives in downstream DESeq2 analysis
+Stick with the improved pipeline going forward	✅ Absolutely		Better standard, cleaner separation of QC vs. countable reads
+
+
+The differences between the current (with BED12) and previous (only gtf) scripts and their outputs can be summarized as follows:
+
+1. Strandedness Analysis
+
+Current Script: Uses infer_experiment.py with a BED12 file, correctly identifying the library as reverse-stranded (97.98% "+-,-+" reads).
+Result: featureCounts uses -s 2 (correctly matching the library type).
+Previous Script: Used a GTF file for infer_experiment.py, which is not designed for strandedness checks. This likely led to incorrect strandedness inference, causing potential misconfiguration of featureCounts (e.g., wrong -s parameter).
+2. Duplication Metrics
+
+Current Script:
+REMOVE_DUPLICATES process reports 83.98% duplication in the raw BAM (expected pre-deduplication).
+QC_METRICS also measures duplication on the raw BAM (raw_dup_metrics.txt), showing the same duplication rate.
+Previous Script:
+Measured duplication on the deduplicated BAM, reporting post-deduplication metrics (lower duplication rate).
+This masked the true duplication level, making results appear "cleaner" but less representative of raw data quality.
+3. rRNA Quantification
+
+Current Script: Quantifies rRNA using the raw BAM (pre-deduplication), capturing true rRNA contamination levels (higher counts).
+Previous Script: Used the deduplicated BAM, artificially lowering rRNA counts and underrepresenting contamination.
+4. FeatureCounts Results
+
+Current Script: Reports 5.5M assigned reads and 5.1M unassigned (NoFeatures).
+Likely due to:
+Accurate strandedness (-s 2) excluding reads not matching gene orientation.
+Multi-mapping reads (-M) being counted but unassigned if no overlapping features.
+Annotation limitations (e.g., missing non-coding genes).
+Previous Script: Potentially had higher assigned reads if strandedness was misconfigured (e.g., -s 0 for unstranded), leading to incorrect assignments.
+5. MultiQC Reporting
+
+Current Script: Includes raw duplication metrics (high duplication) and post-deduplication metrics, reflecting true data quality.
+Previous Script: Only included post-deduplication metrics, hiding the extent of duplication.
+Key Recommendations
+
+Strandedness: The current script’s use of BED12 is correct. Verify the library type matches the strandedness (-s 2).
+Annotation: Check if the GTF file includes all relevant features (e.g., non-coding RNAs). Consider using a comprehensive annotation like GENCODE.
+Unassigned Reads: Investigate alignment distribution (e.g., IGV) to determine if reads map to unannotated regions or introns.
+rRNA: High rRNA in raw data suggests ribosomal RNA contamination. Consider ribosomal depletion in wet-lab steps.
+The current script provides more accurate metrics (strandedness, duplication, rRNA), while the previous script’s "consistency" likely stemmed from incorrect assumptions (e.g., wrong strandedness, post-deduplication rRNA). Use the current pipeline but address annotation/biological factors explaining unassigned reads.
+
+
+
+
+🧠 Why Go Beyond featureCounts?
+
+featureCounts is alignment-based, meaning:
+
+You map reads with HISAT2 (or STAR)
+Then count how many align to known exons/genes
+This is robust and widely used
+But it only gives gene-level counts, and sometimes:
+Struggles with multi-mapping reads
+Doesn’t resolve isoforms
+So enter: Salmon and RSEM, which use transcript-level models and smarter quantification!
+
+🧬 What Are Duplicates in RNA-Seq (Library Prep)?
+
+🔁 PCR Duplicates (also called technical duplicates)
+These arise not from biology, but from the amplification step during library prep — typically:
+
+You extract mRNA (or total RNA).
+Reverse-transcribe it into cDNA.
+Use PCR to amplify this cDNA to get enough material for sequencing.
+PCR amplifies some fragments more than others (due to chance or bias).
+You end up with identical fragments that came from a single molecule.
+These duplicated reads don't increase statistical power — they're essentially clones of the same original RNA molecule.
+🧪 How Are Duplicates Detected?
+
+Picard's MarkDuplicates, samtools markdup, and similar tools detect duplicates based on:
+
+Alignment position (for single-end reads: identical start position)
+Strand
+Optional: UMI (Unique Molecular Identifier), if your library has them
+So if many reads align to the exact same genomic coordinates, they’re marked as duplicates.
+
+
+🧹 What Is Deduplication?
+
+Deduplication = removing (or marking) reads that are PCR duplicates
+
+You can either:
+
+Just mark duplicates (for QC): REMOVE_DUPLICATES=false
+Or actually remove them from downstream analysis: REMOVE_DUPLICATES=true
+In your case:
+
+You deduplicated BAMs before featureCounts, which is a very good practice to prevent artificial inflation of expression due to PCR over-representation.
+
+💡 Why This Matters for DESeq2
+DESeq2 assumes that:
+
+Read counts reflect transcript abundance
+Technical artifacts are minimized
+
+So, if duplicates aren't removed:
+
+A highly amplified transcript might be mistakenly flagged as differentially expressed
+Variance estimates become distorted
+Especially problematic if duplication is not consistent across samples
+This is why deduplication is more than just a QC metric — it directly improves your statistical modeling downstream.
+
+🧠 Summary
+
+Concept		Description
+Duplicate reads	Reads that arise from PCR amplification, not from independent RNA molecules
+MarkDuplicates	Tool that finds and flags them, using alignments
+Deduplication	Removing duplicates, keeping only one copy to reduce bias
+Best practice	Deduplicate before quantification, use raw BAM for QC metrics
+
+🧠 Why Go Beyond featureCounts?
+
+featureCounts is alignment-based, meaning:
+
+You map reads with HISAT2 (or STAR)
+Then count how many align to known exons/genes
+This is robust and widely used
+But it only gives gene-level counts, and sometimes:
+Struggles with multi-mapping reads
+Doesn’t resolve isoforms
+So enter: Salmon and RSEM, which use transcript-level models and smarter quantification!
+
+
+🧪 🔥 Salmon: Ultra-Fast Quantification (Alignment-Free or Quasi-Mapping)
+
+What it does:
+Uses a transcriptome index (not genome)
+Reads are mapped pseudo-aligned to transcripts
+Assigns reads to transcripts using probabilistic models
+Gives transcript-level and gene-level abundance (TPM, counts)
+Advantages:
+🚀 Super fast
+🧠 Models for bias correction (e.g., GC, sequence-specific, fragment)
+✨ Useful for transcript-level differential expression, isoform switching
+Output:
+quant.sf: contains transcript ID, length, effective length, TPM, and estimated counts
+
+
+🧪 RSEM: Full Probabilistic Alignment-Based Quantification
+
+What it does:
+Takes aligned reads (from STAR or Bowtie2) or does its own alignment
+Assigns reads to transcripts using maximum likelihood estimation
+Corrects for multi-mapping, fragment bias, and models transcript abundances
+Advantages:
+🎯 Very accurate
+💡 Especially good for short-read RNA-seq
+🧬 Used in big projects like TCGA and GTEx
+Output:
+Estimated TPM, expected counts, posterior probabilities
+Can be input directly to DESeq2, edgeR, or tximport
+
+
+########################################################
+LAST SCRIPT WITH BED12 FILE + SALMON + MULTIPLE SAMPLES
+########################################################
+
+1. Check if salmon is in conda environment
+
+Use: 
+conda list
+salmon --version
+salmon 1.10.3
+
+Otherwise, install it:
+conda install bioconda::salmon
+or
+conda install bioconda/label/cf201901::salmon
+
+2. in /genome create subfolder salmon_index
+
+3. Out of consistency, download the mouse transcriptome from UCSC (RefSeq Transcripts)
+
+RefSeq FASTA for GRCm38/mm10:
+http://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/mrna.fa.gz
+Contains RefSeq-annotated mRNA sequences.
+
+Alternatively:
+
+A)
+GENCODE (Recommended for Compatibility with Salmon)
+
+GENCODE provides comprehensive transcriptome FASTA files that align with their annotations (GTF).
+For GRCm38/mm10 (Mouse):
+
+Transcriptome FASTA (All transcripts):
+https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M25/gencode.vM25.transcripts.fa.gz
+Includes protein-coding, lncRNA, rRNA, and other transcripts.
+
+B)
+
+Ensembl (Alternative to GENCODE)
+
+Transcriptome FASTA (GRCm38/mm10):
+
+https://ftp.ensembl.org/pub/release-108/fasta/mus_musculus/cdna/Mus_musculus.GRCm38.cdna.all.fa.gz
+
+Matches Ensembl annotations and works with Salmon.
+
+IMPORTANT:
+
+Key Notes
+
+1. GENCODE vs. UCSC/RefSeq:
+GENCODE includes more transcripts (e.g., lncRNAs, pseudogenes) and is widely used in RNA-seq workflows.
+UCSC RefSeq is simpler but may miss non-coding RNAs.
+2. Salmon Compatibility:
+Use the same transcriptome FASTA that matches your annotation (GTF).
+Example: Pair gencode.vM25.transcripts.fa with gencode.vM25.annotation.gtf.
+3. rRNA Filtering:
+Use your existing rRNA-filtered GTF (gencode.vM25_rRNA.gtf) with featureCounts to quantify rRNA contamination.
+
+
+SUMMARY: To this point, we have samples (fq.gz) and the transcriptome (mrna.fa.gz).
+There are two ways of using Salmon
+1) Salmon transcriptome-only quantification using non-decoy index
+2) 
+
+
+
+4. Out of consistency, download the full mm10 mouse genome from UCSC https://hgdownload.soe.ucsc.edu/downloads.html#mouse
+- In the website, go to Dec. 2011 (GRCm38/mm10), click on "Genome sequence files and select annotations (2bit, GTF, GC-content, etc)"
+- click on "mm10.fa.gz"
+- Save it in /genome and decompress it with gunzip in bash
+- Remember that transcriptome "mrna.fa", which is also from UCSC, is in /genome/salmon_index
+
+5. CREATE a GENTROME (“Decoy-Aware Transcriptome”)
+When using Salmon, a "decoy-aware" index means that the index includes decoy sequences—typically genomic regions that could otherwise attract non-specific read mapping (e.g., intergenic regions, repeats, pseudogenes, etc.).
+
+🧪 Why is this important?
+
+Reads that don’t truly originate from known transcripts might still align to them due to sequence similarity. Without decoys, these “misassigned” reads can inflate transcript counts, particularly for genes near repetitive or low-complexity regions.
+
+🧬 A Decoy-Aware Index Includes:
+The usual transcriptome (like your mrna.fa)
+Genomic decoys: full or masked genome added to the transcriptome
+A "gentrome" = GENome + TRANSCRIPTOME
+A decoy list file that tells Salmon what is what
+
+📈 Benefits of Using Decoy-Aware Indexing
+
+	With Decoys					Without Decoys
+✅ Lower false positives in quantification			❌ Potential misassignment of intergenic reads
+✅ Better handling of ambiguous reads			❌ Inflated TPMs for low-expression genes
+✅ Recommended for best-practices pipelines		❌ Not ideal for noisy or unstranded data
+
+
+Steps for the Gentrome generation:
+
+1. /genome/salmon_index
+touch build_salmon_decoy_index.sh
+chmod u+x build_salmon_decoy_index.sh
+
+2. Script:
+
+#!/bin/bash
+
+# === Set working directory ===
+cd /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/salmon_index
+
+# === Set input files ===
+GENOME="/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/mm10.fa"
+TRANSCRIPTOME="/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/salmon_index/mrna.fa"
+
+# === Output name ===
+INDEX_DIR="mm10_salmon_index_decoyaware"
+
+echo "STEP 1: Creating gentrome.fa (transcriptome + genome)..."
+cat ${TRANSCRIPTOME} ${GENOME} > gentrome.fa
+
+echo "STEP 2: Creating decoys.txt..."
+grep "^>" ${GENOME} | cut -d " " -f 1 | sed 's/>//' > decoys.txt
+
+echo "STEP 3: Building decoy-aware Salmon index..."
+salmon index \
+    -t gentrome.fa \
+    -d decoys.txt \
+    -i ${INDEX_DIR} \
+    -k 31
+
+echo "DONE! Decoy-aware Salmon index created in: ${INDEX_DIR}"
+
+3. Run
+
+./build_salmon_decoy_index.sh
+
+
+########### SALMON TRANSCRIPTOM-ONLY QUANTIFICATION USING NON-DECOY AWARE INDEX ##################
+
+4. Indexing the transcriptome with salmon
+in bash, go to /nextflow_alignment
+
+salmon index \
+  -t /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/salmon_index/mrna.fa \
+  -i /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/salmon_index/mm10_salmon_index \
+  -k 31
+
+-t: Path to your transcriptome FASTA file
+-i: Output directory for the Salmon index
+-k 31: Default k-mer size for Salmon (feel free to adjust, but 31 works well for most Illumina data)
+
+#################################################################################################################
+
+Directory structure of indexed-transcriptome:
+
+/genome/salmon_index/mm10_salmon_index/
+├── ctable.bin
+├── info.json
+├── pre_indexing.log
+├── ... etc.
+
+##############################################
+
+6. Update 'params' in .nf file
+
+params.salmon_index = "/.../salmon_index/mm10_salmon_index_decoyaware" (decoy)
+
+or
+
+params.salmon_index = "/.../salmon_index/mm10_salmon_index" (non-decoy)
+
+
+Directory structure after generating Decoy-Aware Salmon Index
+
+
+📌 What You Gain from Adding Salmon:
+
+Tool				Output			Strength				DESeq2 Use
+featureCounts			Gene-level counts	Robust, read-level QC aware	✅ Yes, for classic alignment-based DESeq2 workflows
+Salmon				Transcript-level		Fast, bias-aware quantifier	✅ (via tximport)
+							Fast, alignment-free (quasi-mapping), allows better isoform resolution
+
+### AGAIN: SUMMARY ####
+
+salmon index \
+  -t mrna.fa \		# transcriptome
+  -i mm10_salmon_index \
+  -k 31
+
+✅ Uses only the transcriptome
+❌ No genomic sequences or decoy list
+➡️ So Salmon has no way to distinguish "real" transcript-mapping reads from misleading ones
+
+The way to fix that is by creating a DECOY-AWARE INDEX:
+
+1. Download/prepare genome FASTA (same genome as your GTF)
+
+GENOME=genome.fa         # Full mm10 genome
+TRANSCRIPTOME=mrna.fa    # Your current transcriptome
+
+2. Make the gentrome
+
+cat ${TRANSCRIPTOME} ${GENOME} > gentrome.fa
+
+3. Create a decoy list (sequence names from genome)
+
+grep "^>" ${GENOME} | cut -d " " -f 1 | sed 's/>//' > decoys.txt
+
+4. Build the decoy-aware index
+
+salmon index \
+  -t gentrome.fa \
+  -d decoys.txt \
+  -i salmon_index_decoyaware \
+  -k 31
+
+📈 Benefits of Using Decoy-Aware Indexing
+
+With Decoys					Without Decoys
+✅ Lower false positives in quantification		❌ Potential misassignment of intergenic reads
+✅ Better handling of ambiguous reads		❌ Inflated TPMs for low-expression genes
+✅ Recommended for best-practices pipelines	❌ Not ideal for noisy or unstranded data
+
+
+##############
+
+
+Script: **IMPORTANT: In this script, Salmon is employed as transcriptome-only quantification using an index NON-DECOY AWARE from folder "mm10_salmon_index"
+The script includes: HISAT2 - deduplication - FeatureCounts - QC Metrics - Salmon - MultiQC
+"main_analysis_prebuilt_HISAT2_only_FC_Salm_multi.nf"
+Reason of not running salmon with DECOY AWARE INDEX: the generation of a 'gentrome' is not plausible in this computer.  
+
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads         = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/*.fq.gz"
+params.hisat2_index  = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.salmon_index  = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/salmon_index/mm10_salmon_index"
+params.annotation    = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10.refGene.gtf"
+params.bed12         = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/mm10_refGene.bed12"
+params.rrna_gtf      = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_refGene_rRNA.gtf"
+params.picard_path   = "/Users/Frano/bin/picard.jar"
+params.outdir        = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch         = Channel.value(params.hisat2_index)
+salmon_index_ch  = Channel.value(params.salmon_index)
+annotation_ch    = Channel.value(file(params.annotation))
+bed12_ch         = Channel.value(file(params.bed12))
+rrna_gtf_ch      = Channel.value(file(params.rrna_gtf))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/Alignment", mode: 'copy', pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs", mode: 'copy', pattern: "*.log"
+
+    input:
+    val index_prefix
+    tuple val(sample_id), path(read)
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.sorted.bam"),
+          path("${sample_id}_hisat2.log")
+
+    script:
+    """
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           --seed 42 \\
+           -p 2 | \\
+    samtools sort -@ 2 -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+// ----------------------
+// PROCESS: REMOVE DUPLICATES
+// ----------------------
+process REMOVE_DUPLICATES {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/dedup", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.dedup.bam"), path("${sample_id}_dedup_metrics.txt")
+
+    script:
+    """
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=${sample_id}.dedup.bam \\
+        M=${sample_id}_dedup_metrics.txt \\
+        REMOVE_DUPLICATES=true \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/FeatureCounts", mode: 'copy', pattern: "*.txt*"
+
+    input:
+    tuple val(sample_id), path(dedup_bam), path(hisat_log)
+    file annotation
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}_counts.txt"),
+          path("${sample_id}_counts.txt.summary")
+
+    script:
+    """
+    featureCounts -T 2 \\
+                  -M \\
+                  -s 2 \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${dedup_bam}
+    """
+}
+
+// ----------------------
+// PROCESS: SALMON QUANTIFICATION
+// ----------------------
+process SALMON_QUANT {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/Salmon", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(read), val(salmon_index)
+
+    output:
+    path "${sample_id}_salmon_quant/quant.sf"
+
+    script:
+    """
+    salmon quant -i ${salmon_index} \\
+                 -l A \\
+                 -r ${read} \\
+                 -p ${task.cpus} \\
+                 -o ${sample_id}_salmon_quant
+    """
+}
+
+// ----------------------
+// PROCESS: QC METRICS
+// ----------------------
+process QC_METRICS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/qc_metrics", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file bed12
+    file rrna_gtf
+
+    output:
+    tuple path("${sample_id}_rrna_counts.txt"),
+          path("${sample_id}_strandedness.txt"),
+          path("${sample_id}_raw_dup_metrics.txt")
+
+    script:
+    """
+    featureCounts -T 1 -a ${rrna_gtf} -o ${sample_id}_rrna_counts.txt ${bam}
+    infer_experiment.py -r ${bed12} -i ${bam} > ${sample_id}_strandedness.txt 2>&1
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=/dev/null \\
+        M=${sample_id}_raw_dup_metrics.txt \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*hisat2.log"
+    path "*counts.txt.summary"
+    path "*rrna_counts.txt"
+    path "*strandedness.txt"
+    path "*raw_dup_metrics.txt"
+    path "*dedup_metrics.txt"
+    path "*_salmon_quant/quant.sf"
+
+    output:
+    path "multiqc_report.html"
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_report.html \\
+        --module salmon \\
+        --module hisat2 \\
+        --module featurecounts \\
+        --module picard \\
+        --module custom_content \\
+        --cl-config "extra_fn_clean_exts: [ '_strandedness', '_rrna_counts' ]"
+    """
+}
+
+// ----------------------
+// WORKFLOW
+// ----------------------
+workflow {
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+
+    deduped = REMOVE_DUPLICATES(aligned.map { id, bam, log -> tuple(id, bam) })
+
+    hisat_logs = aligned.map { id, bam, log -> tuple(id, log) }
+
+    counted = FEATURECOUNTS(deduped.combine(hisat_logs), annotation_ch)
+
+    qc_metrics = QC_METRICS(aligned, bed12_ch, rrna_gtf_ch)
+
+    salmon_input = reads_ch.map { id, read -> tuple(id, read, params.salmon_index) }
+    salmon_out = SALMON_QUANT(salmon_input)
+
+    // Inputs for MultiQC
+    hisat2_logs     = aligned.map { id, bam, log -> log }
+    counts_summary  = counted.map { id, counts, summary -> summary }
+    rrna_counts     = qc_metrics.map { rrna, strand, dup -> rrna }
+    strand_metrics  = qc_metrics.map { rrna, strand, dup -> strand }
+    raw_dup_metrics = qc_metrics.map { rrna, strand, dup -> dup }
+    dedup_metrics   = deduped.map { id, bam, metrics -> metrics }
+
+    MULTIQC(
+        hisat2_logs,
+        counts_summary,
+        rrna_counts,
+        strand_metrics,
+        raw_dup_metrics,
+        dedup_metrics,
+        salmon_out
+    )
+}
+
+
+####################
+
+PROBLEM: The processing of just 2 samples takes more 4 hours. HISAT2, SAMtools and Salmon work together at the same time lowering the outputting of files.
+POTENTIAL IMPROVEMENT
+- Make a script to test only Salmon and check if it works and how much time is able to process one sample. After hours, Salmon did not output anything.
+- Modify the sequence of actions in script. From first to the last: HISAT2 - MarkDuplicate - Picard - FeatureCounts - Salmon ... again x sample ... MultiQC
+The idea is that HISAT2, SAMtools and Salmon CANNOT work simultaneously.
+
+####################
+
+
+Script to test Salmon for one sample (decoy non-aware): Includes only Salmon and MultiQC
+"main_analysis_prebuilt_Salmon.nf"
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads         = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/G1_0005-24_L_S1_R1_001_trimmed.fq.gz"
+params.salmon_index  = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/salmon_index/mm10_salmon_index"
+params.outdir        = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read, params.salmon_index)
+    }
+
+// ----------------------
+// PROCESS: SALMON QUANTIFICATION
+// ----------------------
+process SALMON_QUANT {
+    tag "${sample_id}"
+    publishDir "${params.outdir}/Salmon", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(read), val(salmon_index)
+
+    output:
+    path "${sample_id}_salmon_quant"
+
+    script:
+    """
+    salmon quant -i ${salmon_index} \\
+                 -l A \\
+                 -r ${read} \\
+                 -p ${task.cpus} \\
+                 -o ${sample_id}_salmon_quant
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*_salmon_quant/quant.sf"
+
+    output:
+    path "multiqc_salmon_report.html"
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_salmon_report.html \\
+        --module salmon
+    """
+}
+
+// ----------------------
+// WORKFLOW
+// ----------------------
+workflow {
+    salmon_out = SALMON_QUANT(reads_ch)
+
+    MULTIQC(salmon_out)
+}
+
+Option 1
+
+NXF_OPTS="-Dreport.overwrite=true" \
+caffeinate nextflow run ./main_analysis_prebuilt_Salmon.nf \
+  -profile conda \
+  -with-report execution_report.html \
+  -with-timeline execution_timeline.html
+
+# This tells the JVM (which Nextflow runs on) to allow overwriting the report file.
+
+Option 2
+
+rm execution_report.html execution_timeline.html
+
+caffeinate nextflow run ./main_analysis_prebuilt_Salmon.nf \
+  -profile conda \
+  -with-report execution_report.html \
+  -with-timeline execution_timeline.html
+
+
+Folder structure:
+
+
+result/salmon/
+├── G1_0005-24_L_S1.fq_salmon_quant/
+│   └── aux_info/
+│   │   ├── ambig_info.tsv
+│   │   ├── expected_bias.gz
+│   │   ├── fld.gz
+│   │   ├── meta_info.json
+│   │   └── ...
+│   │
+│   ├── cmd_info.json
+│   ├── lib_format_counts.json
+│   │
+│   ├── libParams
+│   │   └── flenDist.txt
+    │
+    ├── logs
+    │   └── salmon_quant.log
+    │
+    └──  quant.sf
+
+
+Script to test multiple samples. Includes HISAT2 - deduplication - QC Metrics - FeatureCounts - MultiQc (without Salmon). ONLY TWO SAMPLES WERE PROCESSED.
+"main_analysis_prebuilt_HISAT2_only_FeatCounts_multi.nf"
+** IMPORTANT: THIS SCRIPT IS NO LONGER REMOVING DUPLICATES (REMOVE_DUPLICATES=false) ** 
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads         = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/*.fq.gz"
+params.hisat2_index  = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.annotation    = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10.refGene.gtf"
+params.bed12         = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/mm10_refGene.bed12"
+params.rrna_gtf      = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/mm10_refGene_rRNA.gtf"
+params.picard_path   = "/Users/Frano/bin/picard.jar"
+params.outdir        = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch      = Channel.value(params.hisat2_index)
+annotation_ch = Channel.value(file(params.annotation))
+bed12_ch      = Channel.value(file(params.bed12))
+rrna_gtf_ch   = Channel.value(file(params.rrna_gtf))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+
+    tag "${sample_id}"
+    cpus 2                    // Allocate 2 CPUs; can be increased dynamically
+    maxForks 1               // Run alignments one at a time to reduce memory usage
+    publishDir "${params.outdir}/Alignment", mode: 'copy', pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs", mode: 'copy', pattern: "*.log"
+
+    input:
+    val index_prefix         // HISAT2 index path
+    tuple val(sample_id), path(read)  // Sample ID and single-end FASTQ file
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.sorted.bam"),       // Sorted BAM output
+          path("${sample_id}_hisat2.log")        // Alignment log
+
+    script:
+    """
+    # HISAT2 alignment using the provided genome index and read file.
+    # Piped into samtools to directly sort the BAM output.
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           --seed 42 \\
+           -p ${task.cpus} | \\
+    samtools sort -@ ${task.cpus} -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+
+// ----------------------
+// PROCESS: REMOVE DUPLICATES (Picard MarkDuplicates)
+// ----------------------
+process REMOVE_DUPLICATES {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/dedup", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.dedup.bam"), path("${sample_id}_dedup_metrics.txt")
+
+    script:
+    """
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=${sample_id}.dedup.bam \\
+        M=${sample_id}_dedup_metrics.txt \\
+        REMOVE_DUPLICATES=false \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS (gene-level quantification from deduplicated BAM)
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/FeatureCounts", mode: 'copy', pattern: "*.txt*"
+
+    input:
+    tuple val(sample_id), path(dedup_bam), path(hisat_log)
+    file annotation
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}_counts.txt"),
+          path("${sample_id}_counts.txt.summary")
+
+    script:
+    """
+    featureCounts -T 2 \\
+                  -M \\
+                  -s 2 \\
+                  -t exon \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${dedup_bam}
+    """
+}
+
+// ----------------------
+// PROCESS: QC METRICS (rRNA, strandedness, duplication)
+// ----------------------
+process QC_METRICS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/qc_metrics", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file bed12
+    file rrna_gtf
+
+    output:
+    tuple path("${sample_id}_rrna_counts.txt"),
+          path("${sample_id}_strandedness.txt"),
+          path("${sample_id}_raw_dup_metrics.txt")
+
+    script:
+    """
+    featureCounts -T 1 -a ${rrna_gtf} -o ${sample_id}_rrna_counts.txt ${bam}
+
+    infer_experiment.py -r ${bed12} -i ${bam} > ${sample_id}_strandedness.txt 2>&1
+
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=/dev/null \\
+        M=${sample_id}_raw_dup_metrics.txt \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*hisat2.log"                 // HISAT2 alignment logs
+    path "*counts.txt.summary"         // featureCounts summary files
+    path "*rrna_counts.txt"            // rRNA count metrics
+    path "*strandedness.txt"           // Strand specificity metrics
+    path "*_raw_dup_metrics.txt"       // Duplication metrics before deduplication
+    path "*_dedup_metrics.txt"         // Duplication metrics after deduplication
+
+    output:
+    path "multiqc_report.html"         // Consolidated MultiQC report
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_report.html \\
+        --module hisat2 \\
+        --module featurecounts \\
+        --module picard \\
+        --module custom_content \\
+        --cl-config "extra_fn_clean_exts: [ '_strandedness', '_rrna_counts', '_dedup_metrics', '_raw_dup_metrics' ]"
+    """
+}
+
+// ----------------------
+// WORKFLOW DEFINITION
+// ----------------------
+workflow {
+    // Align reads using HISAT2
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+
+    // Remove duplicates from aligned BAM files
+    deduped = REMOVE_DUPLICATES(aligned.map { id, bam, log -> tuple(id, bam) })
+
+    // Count features using featureCounts
+    counted = FEATURECOUNTS(
+        deduped.combine(aligned.map { id, bam, log -> tuple(id, log) }),
+        annotation_ch
+    )
+
+    // Generate QC metrics
+    qc_metrics = QC_METRICS(aligned, bed12_ch, rrna_gtf_ch)
+
+    // Extract specific outputs for MultiQC
+    hisat2_logs     = aligned.map { it[2] }        // HISAT2 logs
+    counts_summary  = counted.map { it[2] }        // featureCounts summaries
+    rrna_counts     = qc_metrics.map { it[0] }     // rRNA counts
+    strand_metrics  = qc_metrics.map { it[1] }     // Strand specificity metrics
+    raw_dup_metrics = qc_metrics.map { it[2] }     // Pre-deduplication metrics
+    dedup_metrics   = deduped.map { it[2] }        // Post-deduplication metrics
+
+    // Run MultiQC with all collected metrics
+    MULTIQC(
+        hisat2_logs,
+        counts_summary,
+        rrna_counts,
+        strand_metrics,
+        raw_dup_metrics,
+        dedup_metrics
+    )
+}
+
+(RNA) Franos-MBP:nextflow_alignment Frano$ 
+
+caffeinate nextflow run main_analysis_prebuilt_HISAT2_only_FeatCounts_multi.nf \
+NXF_OPTS="-Dreport.overwrite=true" \
+caffeinate nextflow run main_analysis_prebuilt_HISAT2_only_FeatCounts_multi.nf \
+  -profile conda \
+  -with-report execution_report.html \
+  -with-timeline execution_timeline.html
+
+
+(RNA) Franos-MBP:nextflow_alignment Frano$ caffeinate nextflow run main_analysis_prebuilt_HISAT2_only_FeatCounts_multi.nf \
+> -profile conda \
+> -with-report execution_report.html \
+> -with-timeline execution_timeline.html
+
+
+(RNA) Franos-MBP:nextflow_alignment Frano$ caffeinate nextflow run main_analysis_prebuilt_HISAT2_only_FeatCounts_multi.nf -profile conda -with-report execution_report.html -with-timeline execution_timeline.html
+
+ N E X T F L O W   ~  version 24.10.5
+
+Launching `main_analysis_prebuilt_HISAT2_only_FeatCounts_multi.nf` [infallible_lovelace] DSL2 - revision: 3fc490d052
+
+executor >  local (4)
+[0e/6622c3] ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[c4/bd2be8] REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [  0%] 0 of 1
+executor >  local (4)
+[0e/6622c3] ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[c4/bd2be8] REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 1 of 1
+executor >  local (4)
+[0e/6622c3] ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[c4/bd2be8] REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 1 of 1
+executor >  local (5)
+[0e/6622c3] ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[c4/bd2be8] REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 1 of 1
+executor >  local (5)
+[0e/6622c3] ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[c4/bd2be8] REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 1 of 1
+executor >  local (12)
+[0b/6e5e41] ALIGN_HISAT2 (G1_0005-24_L_S1.fq)      [100%] 2 of 2 ✔
+[42/707226] REMOVE_DUPLICATES (G1_0005-24_L_S1.fq) [100%] 2 of 2 ✔
+[1f/99b819] FEATURECOUNTS (G1_0005-24_L_S1.fq)     [100%] 4 of 4 ✔
+[86/e35e77] QC_METRICS (G1_0005-24_L_S1.fq)        [100%] 2 of 2 ✔
+[d6/d9cac9] MULTIQC (2)                            [100%] 2 of 2 ✔
+Completed at: 19-Apr-2025 17:32:48
+Duration    : 1h 31m 55s
+CPU hours   : 3.8
+Succeeded   : 12
+
+
+This script includes:
+
+✅ HISAT2 alignment
+✅ Deduplication via Picard
+✅ featureCounts quantification
+✅ rRNA & strandedness QC
+✅ Final MultiQC report with all samples included
+✅ Sequential sample processing (maxForks 1 for each process)
+✅ Outputs organized in subfolders
+
+
+Folder structure:
+
+results/
+├── Alignment/
+│   ├── Sample1.sorted.bam
+│   ├── Sample2.sorted.bam
+│   ├── ...
+│   └── logs/
+│       ├── Sample1_hisat2.log
+│       ├── ...
+├── dedup/
+│   ├── Sample1.dedup.bam
+│   └── Sample1_dedup_metrics.txt
+├── FeatureCounts/
+│   ├── Sample1_counts.txt
+│   ├── Sample1_counts.txt.summary
+├── qc_metrics/
+│   ├── Sample1_rrna_counts.txt
+│   ├── Sample1_strandedness.txt
+│   └── Sample1_raw_dup_metrics.txt
+├── MultiQC/
+│   └── multiqc_report.html
+
+
+
+####################
+
+PROBLEM: The processing of just 2 samples takes roughly 90 minutes. HISAT2, SAMtools and Java overlap to one another, and this means that, at certain point, both samples are running in parallel and lowering outputting speed of files. Also, MultiQC is not capturing all the samples in one report.
+
+Because this time the script did not removed duplicates, the assignment of mapped reads increased to 63.6% in comparison with removing them, which gives only ~43.3%. This means, that ~20% of the assigned mapped-reads are actually duplicates. However, in bulk as well as single- cell RNAseq, we can not distinguish between technical duplicate (from large PCR protocol, which must be removed) from biological duplicate (same copies of mRNA, which are important to keep). The use of UMI in the library-prep would habe help to dissect the nature of the duplicates. Therefore, under this circumstances, IS RECOMMENDED NOT TO REMOVE THEM.
+
+####################
+
+
+🧪 What This Script Does
+
+Step			Tool				Description
+1. ALIGN_HISAT2		HISAT2				Aligns trimmed FASTQ files to mm10 genome
+2. REMOVE_DUPLICATES	Picard				Removes PCR duplicates
+3. FEATURECOUNTS		featureCounts			Performs gene-level quantification
+4. QC_METRICS		featureCounts + Picard + RSeQC	Collects strandedness, duplication, and rRNA contamination
+5. MULTIQC		MultiQC				Summarizes all sample metrics into one report
+
+
+🔁 1. Key Difference in Configuration
+
+
+Setting					Previous Script			Current Script
+REMOVE_DUPLICATES			true				false
+Output BAM used for FC			Deduplicated			BAM with duplicates
+Quantification impact			More conservative counts		More inclusive counts
+RNA-seq best practice			❌ Not recommended		✅ Recommended
+
+
+📊 2. Observed Result Differences
+
+FeatureCounts (*_counts.txt.summary)
+
+📁 G1_0005-24_L_S1
+Metric			REMOVE_DUPLICATES=true	REMOVE_DUPLICATES=false
+Assigned			~5.57 million		28.79 million
+Unassigned_NoFeatures	~5.19 million		8.47 million
+Total Reads Processed	~10.9 million		~38.3 million
+
+📁 G1_0005-24_M_S29
+Metric			REMOVE_DUPLICATES=true	REMOVE_DUPLICATES=false
+Assigned			~5.00 million		20.34 million
+Unassigned_NoFeatures	~5.62 million		10.33 million
+
+🔍 Interpretation:
+Without deduplication, over 5× more reads are retained for quantification.
+With deduplication, most reads are discarded — often wrongly in RNA-seq.
+The Assigned category shows how many reads could be used for gene-level quantification → you retain more usable biological signal without deduplication.
+
+🧬 3. Biological Implications
+
+In RNA-seq, highly expressed genes naturally generate many identical reads (technical duplicates that are actually biological).
+Removing duplicates (like we do for DNA-seq) removes these real signals, leading to underestimation of expression.
+This is especially critical in bulk RNA-seq where expression differences between conditions are subtle.
+
+📌 4. When is REMOVE_DUPLICATES=true useful?
+
+Only in rare RNA-seq setups:
+UMI-based RNA-seq where you can distinguish technical from biological duplicates.
+PCR-heavy protocols where you suspect amplification bias is skewing results.
+Otherwise, it introduces more harm than benefit.
+
+✅ 5. Conclusion and Recommendation
+
+Conclusion
+Your current setting REMOVE_DUPLICATES=false is correct for RNA-seq.
+The huge jump in assigned reads reflects more accurate transcript abundance.
+FeatureCounts now has a more complete picture of read-to-gene assignments.
+
+
+
+
+🧠 Bonus: MultiQC Visualization Breakdown (ChatGPT)
+
+📊 featureCounts / Assignments
+These bars represent how featureCounts classified the aligned reads:
+
+Assigned: Reads assigned to genes (✔️ good)
+Unassigned_Unmapped: Reads that weren't aligned
+Unassigned_Multimapping: Aligned to multiple locations
+Unassigned_NoFeatures: Aligned, but not overlapping any gene
+Unassigned_Ambiguity: Overlaps too many features (ambiguous)
+
+📊 Picard / MarkDuplicates
+These are from MarkDuplicates on your raw BAMs:
+
+Unique_Unpaired: Properly mapped unique reads (not duplicates)
+Duplicate_Unpaired: PCR duplicates (bad for quantification)
+Unmapped: Not aligned at all
+All of these are useful for evaluating RNA-seq quality and library prep efficiency.
+
+MultiQC Explanation of Visualizations (DeepSeeker)
+
+featureCounts / Assignments:
+Assigned: Reads mapped to annotated features (genes).
+Unassigned_Unmapped: Reads not aligned to the genome.
+Unassigned_MultiMapping: Reads mapped to multiple genes.
+Unassigned_NoFeatures: Reads aligned to regions without annotated features.
+Unassigned_Ambiguity: Reads overlapping multiple features (e.g., exons of different genes).
+Picard / Mark Duplicates:
+Unique Unpaired: Non-duplicate reads.
+Duplicate Unpaired: Reads marked as duplicates (removed if REMOVE_DUPLICATES=true).
+Unmapped: Reads not aligned to the genome.
+
+
+######################################################################################################################
+
+Maximizing Compatibility
+If using featureCounts, you might want to restrict counting to exons only (GENCODE GTF has lots of biotypes):
+
+featureCounts \
+  -T 2 \
+  -M \
+  -s 2 \
+  -a gencode.vM25.annotation.gtf \
+  -g gene_id \
+  -t exon \
+  -o sample_counts.txt \
+  sample.bam
+
+This matches standard practice in differential gene expression (like DESeq2 and edgeR).
+
+
+🧪 Can we use -t exon with mm10.refGene.gtf?
+
+✅ Yes, but with a caution:
+The -t parameter in featureCounts specifies the feature type (from the third column in the GTF/GFF).
+Using -t exon only works if your GTF has "exon" entries in that column.
+
+So first, check your GTF:
+
+cut -f3 mm10.refGene.gtf | sort | uniq -c
+
+(RNA) Franos-MBP:gtf Frano$ cut -f3 mm10.refGene.gtf | sort | uniq -c
+  38177 3UTR
+  61560 5UTR
+ 367634 CDS
+ 427386 exon
+  37804 start_codon
+  37766 stop_codon
+  44446 transcript
+
+(RNA) Franos-MBP:gtf Frano$ cut -f3 gencode.vM25.annotation.gtf | sort | uniq -c		# The first 5 lines (##) are metadata and is harmless for featureCounts
+      1 ##contact: gencode-help@ebi.ac.uk
+      1 ##date: 2020-03-24
+      1 ##description: evidence-based annotation of the mouse genome (GRCm38), version M25 (Ensembl 100)
+      1 ##format: gtf
+      1 ##provider: GENCODE
+ 528697 CDS
+     65 Selenocysteine
+ 186108 UTR
+ 843402 exon		# it has almost double  exon compared to refGene.gtf: M25 is more comprehensive: includes non-coding RNAs, pseudogenes, lncRNAs, etc.
+  55401 gene
+  60021 start_codon
+  55754 stop_codon
+ 142604 transcript
+
+
+If you see exon among the results (you likely will), then you're totally safe to use option '-t exon' in featureCounts.
+Both annotations are compatible with featureCounts -t exon.
+If you're aiming for maximum coverage of transcripts, especially non-coding, GENCODE M25 will be a better long-term choice.
+If you stick with refGene, it's totally fine, just be aware it's a bit more curated and compact, which may slightly underestimate read assignments in some samples.
+
+
+Script to test multiple samples. Includes HISAT2 - deduplication - QC Metrics - FeatureCounts - MultiQc (without Salmon). ONLY TWO SAMPLES WERE PROCESSED.
+"main_analysis_prebuilt_HISAT2_only_FeatCounts_multi_vM25.nf"
+** IMPORTANT: THIS SCRIPT IS NO LONGER REMOVING DUPLICATES (REMOVE_DUPLICATES=false) ** 
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/*.fq.gz"
+params.hisat2_index = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.annotation = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/gencode.vM25.annotation.gtf"
+params.bed12 = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/gencode.vM25.annotation.bed12"
+params.rrna_gtf = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/gencode.vM25_rRNA.gtf"
+params.picard_path = "/Users/Frano/bin/picard.jar"
+params.outdir = "results"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch      = Channel.value(params.hisat2_index)
+annotation_ch = Channel.value(file(params.annotation))
+bed12_ch      = Channel.value(file(params.bed12))
+rrna_gtf_ch   = Channel.value(file(params.rrna_gtf))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+
+    tag "${sample_id}"
+    cpus 2                    // Allocate 2 CPUs; can be increased dynamically
+    maxForks 1               // Run alignments one at a time to reduce memory usage
+    publishDir "${params.outdir}/Alignment", mode: 'copy', pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs", mode: 'copy', pattern: "*.log"
+
+    input:
+    val index_prefix         // HISAT2 index path
+    tuple val(sample_id), path(read)  // Sample ID and single-end FASTQ file
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.sorted.bam"),       // Sorted BAM output
+          path("${sample_id}_hisat2.log")        // Alignment log
+
+    script:
+    """
+    # HISAT2 alignment using the provided genome index and read file.
+    # Piped into samtools to directly sort the BAM output.
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           --seed 42 \\
+           -p ${task.cpus} | \\
+    samtools sort -@ ${task.cpus} -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+
+// ----------------------
+// PROCESS: REMOVE DUPLICATES (Picard MarkDuplicates)
+// ----------------------
+process REMOVE_DUPLICATES {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/dedup", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.dedup.bam"), path("${sample_id}_dedup_metrics.txt")
+
+    script:
+    """
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=${sample_id}.dedup.bam \\
+        M=${sample_id}_dedup_metrics.txt \\
+        REMOVE_DUPLICATES=false \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS (gene-level quantification from deduplicated BAM)
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/FeatureCounts", mode: 'copy', pattern: "*.txt*"
+
+    input:
+    tuple val(sample_id), path(dedup_bam), path(hisat_log)
+    file annotation
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}_counts.txt"),
+          path("${sample_id}_counts.txt.summary")
+
+    script:
+    """
+    featureCounts -T 2 \\
+                  -M \\
+                  -s 2 \\
+                  -t exon \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${dedup_bam}
+    """
+}
+
+// ----------------------
+// PROCESS: QC METRICS (rRNA, strandedness, duplication)
+// ----------------------
+process QC_METRICS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/qc_metrics", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file bed12
+    file rrna_gtf
+
+    output:
+    tuple path("${sample_id}_rrna_counts.txt"),
+          path("${sample_id}_strandedness.txt"),
+          path("${sample_id}_raw_dup_metrics.txt")
+
+    script:
+    """
+    featureCounts -T 1 -a ${rrna_gtf} -o ${sample_id}_rrna_counts.txt ${bam}
+
+    infer_experiment.py -r ${bed12} -i ${bam} > ${sample_id}_strandedness.txt 2>&1
+
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=/dev/null \\
+        M=${sample_id}_raw_dup_metrics.txt \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*hisat2.log"                 // HISAT2 alignment logs
+    path "*counts.txt.summary"         // featureCounts summary files
+    path "*rrna_counts.txt"            // rRNA count metrics
+    path "*strandedness.txt"           // Strand specificity metrics
+    path "*_raw_dup_metrics.txt"       // Duplication metrics before deduplication
+    path "*_dedup_metrics.txt"         // Duplication metrics after deduplication
+
+    output:
+    path "multiqc_report.html"         // Consolidated MultiQC report
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_report.html \\
+        --module hisat2 \\
+        --module featurecounts \\
+        --module picard \\
+        --module custom_content \\
+        --cl-config "extra_fn_clean_exts: [ '_strandedness', '_rrna_counts', '_dedup_metrics', '_raw_dup_metrics' ]"
+    """
+}
+
+// ----------------------
+// WORKFLOW DEFINITION
+// ----------------------
+workflow {
+    // Align reads using HISAT2
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+
+    // Remove duplicates from aligned BAM files
+    deduped = REMOVE_DUPLICATES(aligned.map { id, bam, log -> tuple(id, bam) })
+
+    // Count features using featureCounts
+    counted = FEATURECOUNTS(
+        deduped.combine(aligned.map { id, bam, log -> tuple(id, log) }),
+        annotation_ch
+    )
+
+    // Generate QC metrics
+    qc_metrics = QC_METRICS(aligned, bed12_ch, rrna_gtf_ch)
+
+    // Extract specific outputs for MultiQC
+    hisat2_logs     = aligned.map { it[2] }        // HISAT2 logs
+    counts_summary  = counted.map { it[2] }        // featureCounts summaries
+    rrna_counts     = qc_metrics.map { it[0] }     // rRNA counts
+    strand_metrics  = qc_metrics.map { it[1] }     // Strand specificity metrics
+    raw_dup_metrics = qc_metrics.map { it[2] }     // Pre-deduplication metrics
+    dedup_metrics   = deduped.map { it[2] }        // Post-deduplication metrics
+
+    // Run MultiQC with all collected metrics
+    MULTIQC(
+        hisat2_logs,
+        counts_summary,
+        rrna_counts,
+        strand_metrics,
+        raw_dup_metrics,
+        dedup_metrics
+    )
+}
+
+(RNA) Franos-MBP:nextflow_alignment Frano$ caffeinate nextflow run main_analysis_prebuilt_HISAT2_only_FeatCounts_multi_vM25.nf \
+>   -profile conda \
+>   -with-report execution_report.html \
+>   -with-timeline execution_timeline.html
+curl: (6) Could not resolve host: www.nextflow.io
+
+ N E X T F L O W   ~  version 24.10.5
+
+Launching `main_analysis_prebuilt_HISAT2_only_FeatCounts_multi_vM25.nf` [boring_jones] DSL2 - revision: 8af89ab489
+
+executor >  local (4)
+[42/6acfd2] ALIGN_HISAT2 (G1_0005-24_L_S1.fq)      [ 50%] 1 of 2
+[d5/c16b7d] REMOVE_DUPLICATES (G1_0005-24_L_S1.fq) [100%] 1 of 1
+executor >  local (5)
+[42/6acfd2] ALIGN_HISAT2 (G1_0005-24_L_S1.fq)      [ 50%] 1 of 2
+[d5/c16b7d] REMOVE_DUPLICATES (G1_0005-24_L_S1.fq) [100%] 1 of 1
+executor >  local (12)
+[0e/aee0bf] ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [100%] 2 of 2 ✔
+[a3/bc0198] REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 2 of 2 ✔
+[e3/5ac236] FEATURECOUNTS (G1_0005-24_M_S29.fq)     [100%] 4 of 4 ✔
+[e5/27d15d] QC_METRICS (G1_0005-24_M_S29.fq)        [100%] 2 of 2 ✔
+[bb/8bbf24] MULTIQC (2)                             [100%] 2 of 2 ✔
+Completed at: 20-Apr-2025 02:54:33
+Duration    : 55m 9s
+CPU hours   : 2.5
+Succeeded   : 12
+
+
+ANALYSIS OF OUTPUTS FOR PIPILINE USING vM25.GTF AND REMOVING DUPLICATES=FALSE
+
+📈 Alignment Metrics (HISAT2)
+Overall Alignment Rates:
+
+Liver (G1_0005-24_L_S1): 95.57%
+Muscle (G1_0005-24_M_S29): 95.98%
+✅ Excellent alignment rates — anything >90% is great. 📌 Indicates high-quality trimming and proper index/annotation use.
+
+🔍 Duplication Metrics (Picard)
+
+Sample	% Duplication	Unpaired Reads	Duplicate Reads
+Liver	83.98%		31,776,602	26,686,153
+Muscle	80.69%		24,990,554	20,165,448
+
+⚠️ High duplication levels (>80%) in both samples.
+
+This might be due to low-complexity libraries or over-amplification during PCR.
+You set REMOVE_DUPLICATES=false, which is good for RNA-seq (since removing them can bias quantification), but for QC purposes, this is worth flagging.
+Consider reviewing library prep notes — was UMI used?
+
+🔢 Gene Quantification (featureCounts)
+
+Sample	Assigned		No Features	Ambiguous
+Liver	33,475,264	3,548,211	573,214
+Muscle	27,978,990	2,461,234	492,129
+👍 High proportion of reads assigned to genes (>85%) 📌 "Unassigned_NoFeatures" is within acceptable range (~10% or lower is typical)
+
+🧬 Strand specificity:
+
+Both samples are clearly stranded (reverse-stranded / protocol-specific)
++-, -+ is dominant (>65% in liver, >94% in muscle)
+Confirms that -s 2 is the correct featureCounts setting.
+
+🧫 rRNA Content
+Surprisingly:
+
+Both samples have zero rRNA reads detected 🤔
+✅ Ideal outcome if you had rRNA depletion or polyA selection. 🧪 Just be sure the gencode.vM25_rRNA.gtf is accurate and aligns well with your HISAT2 genome reference (mm10).
+
+4. rRNA Content
+
+Observations:
+
+Liver: 9,165 mitochondrial rRNA reads (ENSMUSG00000064337.1/64339.1)
+Muscle: 11,152 mitochondrial rRNA + 16,272 cytoplasmic rRNA reads
+Nuclear rRNA: Minimal counts in both samples
+Interpretation:
+
+Higher mitochondrial rRNA in muscle could indicate:
+More active mitochondrial metabolism (expected)
+Potential sample degradation (check RNA integrity numbers)
+Effective poly-A selection given low nuclear rRNA counts
+Recommendation:
+
+Include mitochondrial content in MultiQC report
+Consider adding a pre-alignment rRNA filtering step if mitochondrial content >10%
+
+✅ General Thoughts
+Overall, your pipeline:
+
+🧠 Is well-designed and modular (you’re using DSL2 like a champ!)
+💾 Runs efficiently despite limited resources
+📊 Outputs very informative QC metrics
+🧬 Processes samples correctly from raw FASTQ to quantification
+If you're planning to scale up:
+
+Parallelization and using maxForks or executor.cpus settings more dynamically will help.
+Memory optimizations (e.g., using task.memory) can ensure reproducibility on other machines or clusters.
+For long-term: consider Docker/Singularity for portability + Conda locking for exact reproducibility.
+
+########################################################################################################################################
+########################################################################################################################################
+
+DeepSeeker's comments on the script, outputs and computer specs:
+
+1. Genome-Annotation Compatibility
+
+Validation Status: ✅ Confirmed Compatible
+
+HISAT2 Index: mm10 (GRCm38)
+Annotation: gencode.vM25 (mm10)
+Critical Check:
+The HISAT2 pre-built index uses primary assembly mm10
+GENCODE M25 is based on GRCm38/mm10 (Mouse Build 38)
+Perfect Match - No version discrepancies
+Recommendation:
+Keep using these paired resources - this is an optimal combination for mouse studies.
+
+2. Library Preparation Uncertainty
+
+Key Implications:
+
+The strandedness discrepancy (Liver 65% vs Muscle 94% proper orientation) could stem from:
+Biological reality: Liver has more natural antisense transcription
+Technical variance: Potential differences in:
+Poly-A selection efficiency
+dUTP second strand digestion completeness
+RNA input quality
+
+Action Items:
+
+- Check FASTQ Headers: Look for library prep identifiers
+zcat your_fastq.gz | head -n 1
+
+Typical Illumina stranded prep codes: reverse or dUTP
+
+- Contact Sequencing Core: Request library preparation metadata
+
+
+- Alternative Approach:
+params.strandedness = 'reverse' // Change to 'unstranded' if needed
+
+Add conditional logic in featureCounts:
+-s ${params.strandedness == 'reverse' ? 2 : 0}
+
+3. rRNA Content Clarification
+
+Your Data Shows:
+
+Liver: 9,165 mitochondrial rRNA (0.027% of aligned)
+Muscle: 27,424 total rRNA (0.098% of aligned)
+Interpretation:
+Excellent rRNA depletion (<0.1% is typical for quality poly-A selections)
+Validation Confirmation:
+No need for additional rRNA filtering - your library prep successfully removed ribosomal RNA.
+
+4. Hardware Considerations
+
+8GB RAM Limitations:
+
+MarkDuplicates: Your current metrics show successful runs, but for larger datasets:
+process REMOVE_DUPLICATES {
+  memory { 2.GB * task.attempt } // Add retry-with-memory-increase
+  errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'terminate' }
+}
+
+HISAT2 Alignment: Your current 1G per core is sufficient but monitor:
+Add to ALIGN_HISAT2:
+memory '3 GB' 
+
+5. MultiQC Enhancement
+
+Current Missing Elements:
+
+Strandedness visualization
+rRNA content comparison
+
+Final Validation Summary
+
+Aspect			Status		Confidence	Action Recommended
+Genome-Annotation Match	Pass		High		None
+Library Prep Consistency	Caution		Medium		Investigate FASTQ metadata
+rRNA Depletion		Pass		High		None
+Strandedness Handling	Warning		Medium		Confirm -s parameter logic
+
+Biological Next Steps
+
+Compare mitochondrial genes:
+
+grep -i "mitochondrion" gencode.vM25.annotation.gtf
+
+Validate with housekeeping genes:
+Actb (β-actin)
+Gapdh
+Check expression consistency between samples
+Your pipeline is technically sound - the remaining questions are biological rather than computational.
+The liver strandedness pattern warrants deeper investigation but could represent genuine biological complexity in hepatic transcription.
+
+########################################################################################################################################
+########################################################################################################################################
+
+Script to test multiple samples. Includes HISAT2 - deduplication - QC Metrics - FeatureCounts - MultiQC. ONLY TWO SAMPLES WERE PROCESSED IT DOESN'T INCLUDE SALMON
+"main_analysis_prebuilt_HISAT2_only_FeatCounts_multi_vM25.nf"
+** IMPORTANT: THIS SCRIPT IS NO LONGER REMOVING DUPLICATES (REMOVE_DUPLICATES=false) **
+** IMPORTANT: THIS SCRIPT COMES ALONG WITH A FILE CALLED "vM25_multiqc_config.yaml", THAT HELPS FOR THE PROPER RENDERING OF MULTIQC **
+
+NF FILE: /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/main_analysis_prebuilt_HISAT2_only_FeatCounts_multi_vM25.nf
+
+#!/usr/bin/env nextflow
+nextflow.enable.dsl = 2
+
+// ----------------------
+// PARAMETERS
+// ----------------------
+params.reads = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_qc/results/trimmed/*.fq.gz"
+params.hisat2_index = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/hisat2_index/mm10/genome"
+params.annotation = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/gencode.vM25.annotation.gtf"
+params.bed12 = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/BED12/gencode.vM25.annotation.bed12"
+params.rrna_gtf = "/Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/genome/gtf/gencode.vM25_rRNA.gtf"
+params.picard_path = "/Users/Frano/bin/picard.jar"
+params.outdir = "results"
+params.multiqc_config = "vM25_multiqc_config.yaml"
+
+// ----------------------
+// CHANNEL DEFINITIONS
+// ----------------------
+reads_ch = Channel
+    .fromPath(params.reads)
+    .map { read ->
+        def id = read.getBaseName().replace('_R1_001_trimmed', '')
+        tuple(id, read)
+    }
+
+index_ch      = Channel.value(params.hisat2_index)
+annotation_ch = Channel.value(file(params.annotation))
+bed12_ch      = Channel.value(file(params.bed12))
+rrna_gtf_ch   = Channel.value(file(params.rrna_gtf))
+
+// ----------------------
+// PROCESS: HISAT2 ALIGNMENT
+// ----------------------
+process ALIGN_HISAT2 {
+
+    tag "${sample_id}"
+    cpus 2                    // Allocate 2 CPUs; can be increased dynamically
+    maxForks 1               // Run alignments one at a time to reduce memory usage
+    publishDir "${params.outdir}/Alignment", mode: 'copy', pattern: "*.sorted.bam"
+    publishDir "${params.outdir}/Alignment/logs", mode: 'copy', pattern: "*.log"
+
+    input:
+    val index_prefix         // HISAT2 index path
+    tuple val(sample_id), path(read)  // Sample ID and single-end FASTQ file
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}.sorted.bam"),       // Sorted BAM output
+          path("${sample_id}_hisat2.log")        // Alignment log
+
+    script:
+    """
+    # HISAT2 alignment using the provided genome index and read file.
+    # Piped into samtools to directly sort the BAM output.
+    hisat2 -x ${index_prefix} \\
+           -U ${read} \\
+           --summary-file ${sample_id}_hisat2.log \\
+           --no-softclip \\
+           --pen-noncansplice 1000000 \\
+           --seed 42 \\
+           -p ${task.cpus} | \\
+    samtools sort -@ ${task.cpus} -m 1G -o ${sample_id}.sorted.bam -
+    """
+}
+
+
+// ----------------------
+// PROCESS: REMOVE DUPLICATES (Picard MarkDuplicates)
+// ----------------------
+process REMOVE_DUPLICATES {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/dedup", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.dedup.bam"), path("${sample_id}_dedup_metrics.txt")
+
+    script:
+    """
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=${sample_id}.dedup.bam \\
+        M=${sample_id}_dedup_metrics.txt \\
+        REMOVE_DUPLICATES=false \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: FEATURECOUNTS (gene-level quantification from deduplicated BAM)
+// ----------------------
+process FEATURECOUNTS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/FeatureCounts", mode: 'copy', pattern: "*.txt*"
+
+    input:
+    tuple val(sample_id), path(dedup_bam), path(hisat_log)
+    file annotation
+
+    output:
+    tuple val(sample_id),
+          path("${sample_id}_counts.txt"),
+          path("${sample_id}_counts.txt.summary")
+
+    script:
+    """
+    featureCounts -T 2 \\
+                  -M \\
+                  -s 2 \\
+                  -t exon \\
+                  -a ${annotation} \\
+                  -o ${sample_id}_counts.txt \\
+                  ${dedup_bam}
+    """
+}
+
+// ----------------------
+// PROCESS: QC METRICS (rRNA, strandedness, duplication)
+// ----------------------
+process QC_METRICS {
+    tag "${sample_id}"
+    maxForks 1
+    publishDir "${params.outdir}/qc_metrics", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(bam), path(hisat_log)
+    file bed12
+    file rrna_gtf
+
+    output:
+    tuple path("${sample_id}_rrna_counts.txt"),
+          path("${sample_id}_strandedness.txt"),
+          path("${sample_id}_raw_dup_metrics.txt")
+
+    script:
+    """
+    featureCounts -T 1 -a ${rrna_gtf} -o ${sample_id}_rrna_counts.txt ${bam}
+
+    infer_experiment.py -r ${bed12} -i ${bam} > ${sample_id}_strandedness.txt 2>&1
+
+    java -jar ${params.picard_path} MarkDuplicates \\
+        I=${bam} \\
+        O=/dev/null \\
+        M=${sample_id}_raw_dup_metrics.txt \\
+        CREATE_INDEX=false \\
+        VALIDATION_STRINGENCY=SILENT
+    """
+}
+
+// ----------------------
+// PROCESS: MULTIQC
+// ----------------------
+process MULTIQC {
+    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+
+    input:
+    path "*hisat2.log"                 // HISAT2 alignment logs
+    path "*counts.txt.summary"         // featureCounts summary files
+    path "*rrna_counts.txt"            // rRNA count metrics
+    path "*strandedness.txt"           // Strand specificity metrics
+    path "*_raw_dup_metrics.txt"       // Duplication metrics before deduplication
+    path "*_dedup_metrics.txt"         // Duplication metrics after deduplication
+
+    output:
+    path "multiqc_report.html"         // Consolidated MultiQC report
+
+    script:
+    """
+    multiqc . \\
+        --filename multiqc_report.html \\
+        --config ${file(params.multiqc_config)} \\
+        --module hisat2 \\
+        --module featurecounts \\
+        --module picard \\
+        --module custom_content \\
+        --cl-config "extra_fn_clean_exts: [ '_strandedness', '_rrna_counts', '_dedup_metrics', '_raw_dup_metrics' ]"
+    """
+}
+
+// ----------------------
+// WORKFLOW DEFINITION
+// ----------------------
+workflow {
+    // Align reads using HISAT2
+    aligned = ALIGN_HISAT2(index_ch, reads_ch)
+
+    // Remove duplicates from aligned BAM files
+    deduped = REMOVE_DUPLICATES(aligned.map { id, bam, log -> tuple(id, bam) })
+
+    // Count features using featureCounts
+    counted = FEATURECOUNTS(
+        deduped.combine(aligned.map { id, bam, log -> tuple(id, log) }),
+        annotation_ch
+    )
+
+    // Generate QC metrics
+    qc_metrics = QC_METRICS(aligned, bed12_ch, rrna_gtf_ch)
+
+    // Extract specific outputs for MultiQC
+    hisat2_logs     = aligned.map { it[2] }        // HISAT2 logs
+    counts_summary  = counted.map { it[2] }        // featureCounts summaries
+    rrna_counts     = qc_metrics.map { it[0] }     // rRNA counts
+    strand_metrics  = qc_metrics.map { it[1] }     // Strand specificity metrics
+    raw_dup_metrics = qc_metrics.map { it[2] }     // Pre-deduplication metrics
+    dedup_metrics   = deduped.map { it[2] }        // Post-deduplication metrics
+
+    // Run MultiQC with all collected metrics
+    MULTIQC(
+        hisat2_logs,
+        counts_summary,
+        rrna_counts,
+        strand_metrics,
+        raw_dup_metrics,
+        dedup_metrics
+    )
+}
+
+YAML FILE: /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/vM25_multiqc_config.yaml
+
+extra_fn_clean_exts:
+  - '.fq'
+  - '_counts.txt.summary'
+  - '_dedup_metrics'
+  - '_raw_dup_metrics'
+  - '_hisat2.log'
+  - '_rrna_counts'
+  - '_strandedness'
+
+custom_plot_config:
+  strandedness:
+    title: "Strand Specificity"
+    ylab: "Fraction of Reads"
+  rrna_content:
+    title: "rRNA Content"
+    ylab: "Read Counts"
+
+
+(RNA) Franos-MBP:nextflow_alignment Frano$ caffeinate nextflow run main_analysis_prebuilt_HISAT2_only_FeatCounts_multi_vM25.nf   -profile conda   -with-report execution_report.html   -with-timeline execution_timeline.html
+
+ N E X T F L O W   ~  version 24.10.5
+
+Launching `main_analysis_prebuilt_HISAT2_only_FeatCounts_multi_vM25.nf` [berserk_bardeen] DSL2 - revision: 8af89ab489
+
+executor >  local (4)
+[5f/ea19fd] process > ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[5c/5c1e70] process > REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [  0%] 0 of 1
+executor >  local (4)
+[5f/ea19fd] process > ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[5c/5c1e70] process > REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 1 of 1
+executor >  local (4)
+[5f/ea19fd] process > ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[5c/5c1e70] process > REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 1 of 1
+executor >  local (5)
+[5f/ea19fd] process > ALIGN_HISAT2 (G1_0005-24_M_S29.fq)      [ 50%] 1 of 2
+[5c/5c1e70] process > REMOVE_DUPLICATES (G1_0005-24_M_S29.fq) [100%] 1 of 1
+executor >  local (12)
+[ec/75989a] process > ALIGN_HISAT2 (G1_0005-24_L_S1.fq)      [100%] 2 of 2 ✔
+[76/711f42] process > REMOVE_DUPLICATES (G1_0005-24_L_S1.fq) [100%] 2 of 2 ✔
+[30/b1303f] process > FEATURECOUNTS (G1_0005-24_L_S1.fq)     [100%] 4 of 4 ✔
+[84/526b58] process > QC_METRICS (G1_0005-24_L_S1.fq)        [100%] 2 of 2 ✔
+[a8/30b5b4] process > MULTIQC (2)                            [100%] 2 of 2 ✔
+Completed at: 20-Apr-2025 16:32:28
+Duration    : 1h 1m 53s
+CPU hours   : 2.7
+Succeeded   : 12
+
+
+RENDERING THE FULL MULTIQC REPORT.
+
+1. the .nf and yaml scripts should be in the same directory (/nextflow_alignment/)
+2. Go to bash --> /results
+3. type: multiqc . --config /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/vM25_multiqc_config.yaml -f
+
+By running multiqc manually, multiqc will take the script from the yaml and render a report from the outputs in /results, which includes all samples ran.
+
+So far, this is the best and easiest way to get a complete final multiqc report (and its MANUALLY)
+
+
+(RNA) Franos-MBP:results Frano$ multiqc . --config /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/vM25_multiqc_config.yaml -f
+ 
+/// MultiQC v1.28
+
+            config | Config validation warning for /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/vM25_multiqc_config.yaml: '_SpecialForm' object has no attribute 'replace'
+            config | Loading config settings from: /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/vM25_multiqc_config.yaml
+       file_search | Search path: /Users/Frano/Desktop/Bioinfo_2025/250127_Doppelganger/April_2025_Bulk_RNAseq/nextflow_alignment/results
+        searching | ████████████████████████████████████████ 100% 21/21                                                   
+             rseqc | Found 2 infer_experiment reports
+     featurecounts | Found 2 reports
+            picard | Found 2 MarkDuplicates reports
+           bowtie2 | Found 2 reports
+     write_results | Data        : multiqc_data   (overwritten)
+     write_results | Report      : multiqc_report.html   (overwritten)
+           multiqc | MultiQC complete
+
+
+
+
+#######################################################################
+#######################################################################
+
+DETERMINING WHETHER THE FASTQ FILES CONTAIN UMIs
+
+#######################################################################
+#######################################################################
+
+By determining the presence of UMIs in either the fastq.gz or fq.gz (trimmed-reads) is important for the removal of technical duplicates (duplication by PCR)
+
+1. Where UMIs Usually Live
+
+UMIs (Unique Molecular Identifiers) are often found in one of two places:
+
+
+Location					Example
+In the read name (header)			@A00469:145:H7WN2DRX2:1:1101:1242:1000:ATCG ← UMI at the end
+At the beginning of the sequence		ATCGGATCACACTG... ← First few bases are UMI
+In a separate read (e.g. Read 2)		Common in paired-end single-cell
+
+🧪 2. Bash Command to Inspect FASTQ Headers
+
+You can peek into the first few headers (even if the file is .gz) using:
+
+gunzip -c G1_0005-24_L_S1_R1_001_trimmed.fq.gz | grep '^@' | head -20
+
+or, for sequences
+
+gunzip -c G1_0005-24_L_S1_R1_001_trimmed.fq.gz | awk 'NR % 4 == 2' | head -10
+
+gunzip -c = decompress to stdout (i.e., in the pipe)
+grep '^@' = pulls lines that start with @ (usually the read headers)
+head -20 = shows only the first 20 matching lines
+
+output:
+
+@VH00269:385:2227FTVNX:1:1101:18492:1000 1:N:0:CCGCGGTT+TTAGCGCT
+@VH00269:385:2227FTVNX:1:1101:25060:1017 1:N:0:CCGCGGTT+CTAGCGCT
+@VH00269:385:2227FTVNX:1:1101:22779:1034 1:N:0:CCGCGGTT+CTAGCGCT
+...
+
+🔍 Interpretation of FASTQ Headers
+
+Here's a representative read header from your output:
+
+@VH00269:385:2227FTVNX:1:1101:18492:1000 1:N:0:CCGCGGTT+TTAGCGCT
+
+This follows the Illumina-style header format:
+
+@<instrument>:<run number>:<flowcell ID>:<lane>:<tile>:<x-pos>:<y-pos> <read>:<is filtered>:<control number>:<barcode sequence>
+
+Field			Value
+Instrument		VH00269
+Run number		385
+Flowcell ID		2227FTVNX
+Lane			1
+Tile			1101
+X-pos			18492
+Y-pos			1000
+Read number		1 (Read 1)
+Is filtered		N (not filtered out)
+Control number		0
+Barcode / Indexes 		(i5+i7)	CCGCGGTT+TTAGCGCT
+
+🧬 Are These UMIs?
+
+These look like Illumina dual indexes, i.e. i5+i7 barcodes, not UMIs:
+
+They're located in the read header after a space
+The format is classic i7+i5: <index1>+<index2>
+All reads show valid index combinations (but they don’t vary per read)
+
+🔬 UMIs, in contrast, are usually:
+
+Unique per molecule (high entropy per read)
+Found:
+	As part of the read name (e.g. @SEQ_ID:UMI)
+	Or encoded at the start of the sequence
+
+Let’s test the latter just in case 👇
+
+🔍 Check the Read Sequence Content
+
+Please run this to inspect the first few sequences:
+
+awk 'NR % 4 == 2' G1_0005-24_L_S1_R1_001_trimmed.fq | head -10
+
+output:
+AATATCCTCTGCAAGTCTACTCTGTGTCCTCTGTTTCTTCTGTACCTTTGACCTTTTCT
+AGTGCATTCATCAGCCTGCATGTTTGTTACAGACCCTGGTCTTGGTGGTGTTCCAGATTT
+TAAATAGACAAACATTTCCTTTCTCTCCTTCAACAGCTTCCTGTAGCCACTGCAGCCCAGT ...
+
+That’ll show the actual bases. If they start with highly variable short patterns (e.g. 8–12 bp) that differ read to read, it might still indicate UMI presence.
+
+But based on what we’ve seen so far, it’s very likely:
+
+❌ No UMIs present
+✅ Only standard Illumina index barcodes (used for demultiplexing)
+
+🧬 Do These Reads Contain UMIs?
+
+Short answer:
+❌ No, these reads do not appear to contain UMIs.
+
+🔍 Why?
+
+1. Read Header Analysis
+
+@VH00269:... 1:N:0:CCGCGGTT+TTAGCGCT
+
+The CCGCGGTT+TTAGCGCT part is a dual-index barcode, not a UMI
+It’s consistent across many reads (not unique → not UMI)
+This comes from the Illumina demultiplexing step
+
+2. Read Sequence Analysis
+
+AATATCCTCTGCAAGTCTACTCTGTGTCCTCTGTTTCTTCTGTACCTTTGACCTTTTCT
+...
+CAAACCCACATGCCTCGCCAGGTATGCCGCATCTGAAGAGCTCTGCATGACATTGCCCAC
+
+The first ~10–20 bases vary biologically, not as structured, short, random UMIs
+No consistent-length prefix like NNNNNNNN
+The reads start with actual biological sequences
+
+✅ Conclusion
+
+These FASTQ reads are standard single-end bulk RNA-seq with Illumina indexes, and do not contain UMIs.
+No special UMI extraction or deduplication by UMI is needed — the Picard MarkDuplicates you're already using is appropriate for identifying and even removing PCR duplicates based on read alignment (although not recommended in bulk RNAseq, especially without UMIs)
+
+If you ever get scRNA-seq, Smart-Seq, or 10x data, you’ll see headers like:
+
+@SEQ_ID UMI:NNNNNNNNNNNN
+
+Because these bulk RNAseq samples have not UMIS:
+
+in bulk RNA-seq without UMIs, removing duplicates is controversial because:
+
+🔥 Why not to remove duplicates:
+You can't tell technical PCR duplicates from true biological duplicates (e.g. high expression of a transcript).
+Removing duplicates risks underestimating expression of highly expressed genes.
+Especially true in single-end RNA-seq, where alignment-based deduplication is more prone to removing real signal.
+
+What are i7+i5 indexes in the FASTQ header?
+
+Let’s demystify:
+
+🧬 What are they?
+i7 = Index 1 = barcode read from Read 2
+i5 = Index 2 = barcode read from Read 3 (if present)
+These are known barcode sequences used to identify which sample a read belongs to in a multiplexed library.
+
+🧬 Where do they appear?
+During library prep, each sample gets a unique pair of short DNA barcodes (typically 6–10 bp).
+These are ligated or attached during adapter ligation and are sequenced as index reads during the run.
+
+🧬 FASTQ header example:
+
+@VH00269:385:2227FTVNX:1:1101:18492:1000 1:N:0:CCGCGGTT+TTAGCGCT
+
+CCGCGGTT = i7 (Index 1)
+TTAGCGCT = i5 (Index 2)
+The + separates i7 and i5
+
+👉 These sequences are used by the sequencer and bcl2fastq (or other demux tools) to assign reads to the correct sample based on a match to a sample sheet.
+
+
+
+Example from Your File
+
+@VH00269:385:2227FTVNX:1:1101:18492:1000 1:N:0:CCGCGGTT+TTAGCGCT
+
+This is a full Illumina-style header. Let's decode it:
+
+
+Section			Value			Meaning
+VH00269			Instrument ID		Name of the sequencing machine
+385			Run number		Specific run on the sequencer
+2227FTVNX		Flowcell ID		Unique ID of the flowcell used
+1			Lane			Flowcell lane number
+1101			Tile			Tile number within the flowcell
+18492			X-position		X coordinate of the cluster
+1000			Y-position		Y coordinate of the cluster
+1			Read number		1 = Read 1 (could be 2 for paired-end)
+N			Is filtered		N = Not filtered, Y = Failed filter
+0			Control number		Control read indicator (usually 0)
+CCGCGGTT+TTAGCGCT	i7+i5 indexes		Sample barcode indexes
+
+
